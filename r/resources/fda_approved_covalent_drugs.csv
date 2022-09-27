@@ -1,0 +1,39 @@
+﻿Drug name,protein_id,Residue
+Afatinib,P00533,CYS-797
+Acalabrutinib,Q06187,CYS-481
+Acetylsalicylic acid,P23219,SER-529
+Bortemozib,P28074,THR-1
+Bortemozib,P20618,THR-1
+Carfilzomib,P28074,THR-1
+Carfilzomib,P20618,THR-1
+Clopidogrel,Q9H244,CYS-17
+Clopidogrel,Q9H244,CYS-270
+Dacomitinib,P00533,CYS-797
+Decitabine,P26358,CYS-1226
+Dexlansoprazole,P20648,CYS-815
+Dimethyl fumarate,P51812,CYS-436
+Dimethyl fumarate,P51812,CYS-599
+Disulfiram,P05091,CYS-319
+Echothiophate,P06276,SER-198
+Eflornithine,P11926,CYS-360
+Esomeprazole,P20648,CYS-815
+Floxuridine,P04818,CYS-195
+Ibrutinib,Q06187,CYS-481
+Lansoprazole,P20648,CYS-815
+Malathion,P06276,SER-198
+Neratinib,P00533,CYS-797
+Olmutinib,P00533,CYS-797
+Omeprazole,P20648,CYS-815
+Orlistat,P16233,SER-152
+Orlistat,P07098,SER-152
+Osimertinib,P00533,CYS-797
+Pantoprazole,P20648,CYS-815
+Rabeprazole,P20648,CYS-815
+Rivastigmine,P22303,SER-200
+Saxagliptin,P27487,SER-630
+Selinexor,O14980,CYS-528
+Ticlopidine,Q9H244,CYS-17
+Ticlopidine,Q9H244,CYS-270
+Vigabatrin,P80404,LYS-329
+Vildagliptin,P27487,SER-630
+Zanubrutinib,Q06187,CYS-481
