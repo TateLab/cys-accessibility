@@ -2035,55 +2035,17 @@ compare.cl.ac %>%
   scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
   scale_fill_manual(values = pnw_palette("Sunset2", 4))
 
-
-
-
-### As boxplots
-rbind(
-  all.fragment %>%
-    filter(Dataset != "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
-           Frag.Class == "Chloroacetamide",
-           quality > 70) %>%
-    distinct() %>%
-    mutate(R.bin = ifelse(R > 4, 
-                          yes = "Chloroacetamides",
-                          no = "Not liganded")) %>% 
-    select(R.bin, R, Dataset, Frag.Class, HalfShell),
-  all.fragment %>%
-    filter(Dataset != "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
-           Frag.Class == "Acrylamide",
-           quality > 70) %>%
-    distinct() %>%
-    mutate(R.bin = ifelse(R > 4, 
-                          yes = "Acrylamides",
-                          no = "Not liganded")) %>% 
-  select(R.bin, R, Dataset, Frag.Class, HalfShell),
-  all.fragment %>%
-    filter(Dataset == "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
-           quality > 70) %>%
-    distinct() %>%
-    mutate(R.bin = ifelse(R > 4, 
-                          yes = "Elaborated electrophiles",
-                          no = "Not liganded")) %>% 
-    select(R.bin, R, Dataset, Frag.Class, HalfShell)) %>%
-  distinct() %>%
-  filter(R.bin %in% c("Chloroacetamides", "Acrylamides", "Not liganded", "Elaborated electrophiles")) %>% 
-  mutate(R.bin = factor(R.bin, levels = c("Not liganded", "Acrylamides", "Chloroacetamides", "Elaborated electrophiles"))) %>%
-  ggplot(aes(x = HalfShell,
+compare.cl.ac %>%
+  filter(R.bin %in% c("Liganded by\nchloroacetamides", "Liganded by\nacrylamides")) %>%
+  ggplot() +
+  geom_boxplot(aes(x = HalfShell,
                    y = Dataset,
-                   fill = R.bin)) +
-  geom_boxplot()+
-  theme_linedraw() + 
-  theme(panel.grid = element_blank(),
-        strip.background = element_rect(fill = "white", colour = "white"),
-        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
-  ylab("") + 
-  xlab("Amino Acid Depth") +
-  labs(fill = "Liganded by:") +
-  scale_fill_manual(values = pnw_palette("Sunset2", 4))
+                   fill = R.bin)) + 
+  geom_point(aes(x = HalfShell,
+                 y = Dataset),
+             position = "jitter")
 
-
-#ggsave("plots/20220905/CLvsAC_Boxplots.png", height = 4.5, width = 7.5)
+ggsave("plots/20220905/AllScoutFragment_RefDist.png", height = 6, width = 8)
 
 
 
@@ -2326,56 +2288,4 @@ ComplexHeatmap::UpSet(upset.scout, comb_order = rev(order(comb_size(upset.scout)
   
   
   
-```
-
-
-``` {R Any evidence of protein unfolding?}
-
-## Compare number of cysteines identified per protein
-
-## Number of exposed (pPSE < 5) in proteins with >2 cysteines liganded
-unfold <- rbind(#backus.isotop,
-      #isotop.original.df,
-      gygi.df,
-      #pz.ebx2.df,
-      #vino_tmtabpp,
-      #oxi.df,
-      #kemper_tmtabpp,
-      #dia.abpp.df,
-      #caged.live.df,
-      #caged.lysate.df,
-      #caged.cik4.df,
-      caged.cbk1.df) %>%
-  select(protein_id, position, Dataset, HalfShell) %>%
-  distinct() %>%
-  group_by(protein_id, Dataset) %>%
-  filter(n() > 1) %>%
-  ungroup() %>%
-  mutate(Exposed = ifelse(HalfShell < 6, 
-                          yes = "Exposed",
-                          no = "Buried")) %>%
-  group_by(protein_id, Dataset, Exposed) %>%
-  summarise(n = n()) %>%
-  pivot_wider(names_from = "Exposed",
-              values_from = "n") %>%
-  mutate_at(vars(3:4), replace_na, 0) %>%
-  mutate(Total = Exposed + Buried) %>%
-  filter(Buried < 10,
-         Total < 10)
-
-unfold %>%
-  ggplot(aes(x = Buried)) + 
-  geom_histogram(binwidth = 1) +
-  facet_grid(Dataset~Total, scales = "free_y")
-
-
-unfold %>%
-  ggplot(aes(x = Buried)) + 
-  geom_histogram(binwidth = 1) + 
-  facet_grid(Dataset~paste(Exposed, "exposed residues"), scales = "free_y")
-
-### Unfinished
-
-
-
 ```

@@ -1,0 +1,288 @@
+---
+title: "C-LiP"
+author: "Matt White"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=F}
+
+knitr::opts_chunk$set(echo = T)
+
+library(fs)
+library(data.table)
+library(tidyverse)
+library(janitor)
+
+```
+
+``` {R Import AlphaFold dataset, LiP-MS data, human fasta}
+
+###
+res.fasta <- dir_ls("/Users/mew21/Documents/CysteineAccessibility_GitHub/resources", regexp = "FASTA") %>%
+  fread() %>%
+  mutate(protein_id = sub(Gene,
+                          pattern = "..\\|(.*?)\\|.*",
+                          replacement = "\\1")) %>%
+  select(protein_id, Sequence)
+
+###
+af.access <- dir_ls("/Users/mew21/Documents/CysteineAccessibility_GitHub/af2_accessibility", regexp = "Predicted") %>%
+  fread() %>%
+  rename(pPSE = "nAA_12_70_pae")
+
+###
+lip.raw <- dir_ls("~/Downloads/", regexp = "/41467_2020_18071_MOESM5_ESM") %>%
+  readxl::read_excel() %>%
+  row_to_names(row_number = 1)
+
+lip.data <- lip.raw %>%
+  rename(Peptide.Seq = "Modified Peptide Sequences",
+         log2.fc = "Log2 Fold Change(Rapamycin treated, Vehicle)",
+         protein_id = "Protein Groups") %>%
+  mutate(Peptide.Seq = gsub(Peptide.Seq, 
+                            pattern = "\\[\\+C2\\+H3\\+N\\+O\\]",
+                            replacement = ""),
+         Peptide.Seq = gsub(Peptide.Seq, 
+                            pattern = "\\[\\+O\\]",
+                            replacement = ""),
+         Peptide.Seq = gsub(Peptide.Seq, 
+                            pattern = "\\[\\+C2\\+H2\\+O\\]",
+                            replacement = ""),
+         Peptide.Seq = gsub(Peptide.Seq, 
+                            pattern = "\\_",
+                            replacement = ""),
+         log2.fc = as.numeric(log2.fc),
+         Qvalue = as.numeric(Qvalue)) %>%
+  filter(!str_detect(protein_id, "\\;")) %>%
+  left_join(res.fasta) %>%
+  mutate(Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Peptide.Seq)[,1], ## [1] takes start of seq
+         Peptide.End = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Peptide.Seq)[,2], ## [1] takes start of seq
+
+         Peptide.Length.1 = nchar(Peptide.Seq),
+         Peptide.Length.2 = Peptide.End + 1 - Peptide.Start)
+
+
+```
+
+``` {R Align FASTA with structuremap output numbering}
+
+af.access %>%
+  arrange(protein_id, position) %>% 
+  summarise(Sequence = paste0(AA))
+
+
+
+```
+
+``` {R Tryptic digest of all proteins}
+
+set.seed(1)
+human.digest <- res.fasta %>%
+  filter(protein_id %in% sample(res.fasta$protein_id, 1000)) %>%
+  mutate(N.Cuts = str_locate_all(Sequence, pattern = "[RK]"),
+         N.Cuts = sub(N.Cuts, pattern = "c\\(", replacement = ""),
+         N.Cuts = sub(N.Cuts, pattern = "\\)", replacement = "")) %>%
+  separate(N.Cuts, into = paste0("Cut",1:2205)) %>%
+  pivot_longer(cols = 3:2207) %>%
+  na.omit() %>%
+  rename(End.Cut = value) %>%
+  mutate(End.Cut = as.numeric(End.Cut),
+         Start.Cut = lag(x = End.Cut, k = 1),
+         Start.Cut = ifelse(is.na(Start.Cut),
+                            0,
+                            Start.Cut),
+         Start.Cut = as.numeric(Start.Cut) + 1,
+         Peptide = substr(Sequence, Start.Cut, End.Cut),
+         N.AA = nchar(Peptide)) %>%
+  filter(N.AA > 5,
+         N.AA < 30) %>%
+  mutate(position = round((Start.Cut + End.Cut) / 2)) 
+
+```
+
+``` {R Left join AA position to each peptide (middle value)}
+
+lip.access.dist <- lip.data %>%
+  select(protein_id, Peptide.Seq, log2.fc, Peptide.Start, Peptide.End) %>%
+  mutate(position = (Peptide.Start + Peptide.End) / 2,
+         position = as.numeric(round(position))) %>% 
+  left_join(af.access, by = c("protein_id", "position"))
+
+## Average distribution of middle of each detected peptide
+lip.access.dist %>%
+  mutate(Total = nrow(.)) %>%
+  group_by(pPSE, Total) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  mutate(Part = n / Total) %>%
+  ggplot(aes(x = pPSE,
+             y = Part)) + 
+  geom_col() + 
+  xlim(-0.5,18)
+
+## Average distribution of log2fc > 1 peptides
+lip.access.dist %>%
+  mutate(Total = nrow(.)) %>%
+  filter(log2.fc > 1) %>%
+  group_by(pPSE, Total) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  mutate(Part = n / Total) %>%
+  ggplot(aes(x = pPSE,
+             y = Part)) + 
+  geom_col()+ 
+  xlim(-0.5,18)
+
+
+
+## Sample of 1000 proteins and their tryptic digest accessibility
+human.digest %>%
+  select(protein_id, position) %>%
+  left_join(af.access, by = c("protein_id", "position")) %>%
+  filter(!is.na(position),
+         !is.na(pPSE)) %>%
+  mutate(Total = nrow(.)) %>%
+  group_by(pPSE, Total) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  mutate(Part = n / Total) %>%
+  ggplot(aes(x = pPSE,
+             y = Part)) + 
+  geom_col()+ 
+  xlim(-0.5,18)
+
+       
+
+```
+
+``` {R Coordinates function}
+
+uniprotid <- "A0AVT1"
+rm(uniprotid)
+
+
+get.aa.dist <- function(uniprotid){
+  
+  print(uniprotid)
+  
+  n.aa <- af.access %>%
+    filter(protein_id == uniprotid) %>%
+    mutate(Res.ID = paste(protein_id, position, AA, sep = "_")) %>%
+    filter(Res.ID %in% list.access.cys | Res.ID %in% list.lip.aa) %>%
+    distinct() %>%
+    nrow()
+  
+  if(n.aa != 0){
+  
+    col.order <- c("protein_id", "position", "AA", 1:n.aa)
+    
+    af.temp <- af.access %>%
+      filter(protein_id == uniprotid) %>%
+      select(protein_id, position, x_coord_c, y_coord_c, z_coord_c) %>%
+      dist() %>%
+      as.matrix() %>%
+      as.data.frame() %>% 
+      rownames_to_column("position") %>%
+      mutate(protein_id = uniprotid) %>%
+      left_join(af.residue.match, by = c("protein_id", "position")) %>%
+      select(col.order) %>%
+      pivot_longer(cols = 4:ncol(.),
+                   names_to = "amino.acid2", 
+                   values_to = "euc.dist") %>%
+      distinct() %>%
+      rename(AA.1 = "AA",
+             position.1 = position,
+             position = "amino.acid2") %>%
+      left_join(af.residue.match, by = c("protein_id", "position")) %>%
+      rename(AA.2 = "AA", 
+             position.2 = "position")
+  
+  return(af.temp)
+    
+  }else{
+    
+    print(paste("Failed on", uniprotid))
+  }
+  
+}
+
+af.residue.match <- af.access %>%
+  select(protein_id, position, AA) %>%
+  distinct() %>%
+  mutate(position = as.character(position))
+
+```
+
+``` {R Look for cartesian distance between cysteine and detected peptides by LiP-MS}
+
+### Table of amino acids in each peptide from LiP data
+### Need a function to remove hits where the nearest AA is from the same peptide
+  ## Make table / list of residues which are in the tryptic peptide containing the Cys TO REMOVE
+
+list.remove.lip <- lip.data %>%
+  left_join(accessible.cys, by = "protein_id") %>%
+  filter(!is.na(Res.ID.Cys)) %>%
+  separate(Res.ID.Cys, into = c("protein_id.Cys", "position.Cys", "AA.Cys"), sep = "_") %>%
+  filter(position.Cys > Peptide.End | position.Cys < Peptide.Start) %>%
+  select(colnames(lip.data)) %>% ### Remove any peptides with ligandable cysteines in them
+  separate(Peptide.Seq, 
+           into = paste0("AA.",0:45),
+           sep = "", remove = F) %>%
+  pivot_longer(cols = 3:47,
+               names_to = "Residue",
+               values_to = "AA") %>%
+  na.omit() %>%
+  mutate(Pep.Position = as.numeric(sub(Residue, pattern = "AA\\.", replacement = "")),
+         position = Peptide.Start + Pep.Position - 1) %>%
+  left_join(af.access, by = c("protein_id", "position")) %>%
+  filter(AA.x == AA.y) %>%
+  rename(AA.LiP = "AA.x") %>%
+  mutate(Res.ID.LiP = paste(protein_id, position, AA.LiP, sep = "_"))
+
+list.lip.aa <- list.remove.lip$Res.ID.LiP %>% unique()
+
+
+## Table of cysteines to find
+accessible.cys <- af.access %>%
+  filter(AA == "C",
+         quality > 70,
+         pPSE < 6) %>%
+  mutate(Res.ID.Cys = paste(protein_id, position, AA, sep = "_"))
+
+list.access.cys <- accessible.cys$Res.ID.Cys %>% unique()
+## get.aa.dist and filter for each
+
+
+
+
+### Need a more efficient way of calculating distances -- involving filtering before/just after dist calculation
+
+
+get.aa.dist("A0AVT1") %>%
+  mutate(Res.ID.Cys = paste(protein_id, position.1, AA.1, sep = "_"),
+         Res.ID.LiP = paste(protein_id, position.2, AA.2, sep = "_")) %>%
+  filter(Res.ID.Cys %in% list.access.cys,
+         Res.ID.LiP %in% list.lip.aa) %>%
+  group_by(Res.ID.Cys) %>%
+  filter(euc.dist == min(euc.dist))
+
+
+```
+
+``` {R LiP-MS Rapamycin}
+
+
+lip.rapa <- lip.data %>%
+  filter(protein_id %in% c("P42345", "P62942")) %>%
+  rename(`Log2 Fold Change(Rapamycin/Vehicle)` = "log2.fc") 
+
+write_csv(lip.rapa, "~/Desktop/LiP-MS_Rapamycin_2uM.csv")
+
+```
+
+
+
+

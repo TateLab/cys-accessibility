@@ -1,5 +1,5 @@
 ---
-title: "Bio3d"
+title: "Cysteine accessibility analysis"
 output: html_document
 date: "`r Sys.Date()`"
 ---

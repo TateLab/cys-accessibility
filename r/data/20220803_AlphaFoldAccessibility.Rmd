@@ -1632,21 +1632,20 @@ gygi.structure <- dir_ls("~/Downloads", regexp = "41587_2020_778_MOESM9_ESM")[1]
   left_join(af.pred) %>%
   select(protein_id, structure_group, AA, position, HalfShell, quality) %>%
   distinct() %>%
-  filter(!is.na(HalfShell)) %>%
-  mutate(Probe = "500uM DBIA")
-
+  filter(!is.na(HalfShell)) %>% 
+  mutate(Probe = "DBIA in cell lysates\n500uM (Nat. Biotech)",
+         Total = length(AA))
 
 ##### Caged probes?
 caged.live.structure <- caged.cbk1.df %>% ### Use ChembioChem dataset -- higher coverage
-  select(colnames(gygi.structure))
+  rename(Probe = "Dataset")
 
-## Plot together
 rbind(caged.live.structure,
       gygi.structure) %>% 
-  filter(quality > 70,
+  filter(quality > 80,
          AA == "C",
          !is.na(HalfShell)) %>%
-  select(protein_id, structure_group, AA, position, Probe, HalfShell) %>% 
+  select(protein_id, structure_group, AA, Total, position, Probe, HalfShell) %>% 
   distinct() %>%
   group_by(structure_group, Probe) %>%
   mutate(Total = n()) %>%
@@ -1657,20 +1656,10 @@ rbind(caged.live.structure,
   left_join(human.cys.wp.structure.filtered) %>% 
   mutate(Part = n / Total,
          Part.Norm = Part - Ref.Part) %>% 
-  ggplot() + 
-  geom_col(data = human.cys.wp.filtered,
-           aes(x = HalfShell,
-               y = 100*Ref.Part),
-           position = position_identity(),
-           fill = "light grey",
-           width = 1,
-           alpha = 0.6) +
-  geom_col(aes(x = HalfShell,
-             y = 100*Part,
-             fill = Probe),
-           position = position_identity(),
-           width = 1,
-           alpha = 0.5) + 
+  ggplot(aes(x = HalfShell,
+             y = 100*Part.Norm,
+             fill = Probe)) + 
+  geom_col() + 
   facet_grid(Probe~structure_group) +
   theme_linedraw() + 
   theme(panel.grid = element_blank(),
@@ -1679,12 +1668,11 @@ rbind(caged.live.structure,
         strip.text.y.right = element_text(angle = 0),
         legend.position = "none") + 
   ylab("% of residues") + 
-  scale_y_continuous(expand = expansion(mult = c(0,0.05))) + 
-  scale_x_continuous(expand = expansion(mult = c(0,0.05))) + 
+  scale_y_continuous(expand = expansion(mult = c(0.05,0.05))) + 
   xlab("Amino Acid Depth") + 
-  scale_fill_manual(values = pnw_palette("Sunset", 5)[c(1,3)])
+  scale_fill_manual(values = pnw_palette("Sunset", 5)[1:2])
 
-ggsave("plots/20220809/GygiCaged_ByStructure.png", height = 4, width = 12)
+#ggsave("plots/20220809/GygiCaged_ByStructure.png", height = 5, width = 12)
 
 
 ```
@@ -2760,7 +2748,7 @@ vino.hyper.scout %>%
 ``` {R Gygi + cravatt fragment screening}
 
 ### Gygi / Cravatt nature biotech 2021
-gygi.ligand.df <- dir_ls("~/Downloads", regexp = "41587_2020_778_MOESM9_ESM")[1] %>%
+gygi.df <- dir_ls("~/Downloads", regexp = "41587_2020_778_MOESM9_ESM")[1] %>%
   readxl::read_excel(sheet = 2) %>%
   mutate(protein_id = sub(`Uniprot ID`, 
                            pattern = "..\\|(.*)\\|.*",
@@ -2773,14 +2761,14 @@ gygi.ligand.df <- dir_ls("~/Downloads", regexp = "41587_2020_778_MOESM9_ESM")[1]
   mutate(Total = length(AA),
          Dataset = "SLC-ABPP")
 
-gygi.liganded.cys <- gygi.ligand.df %>%
+gygi.liganded.cys <- gygi.df %>%
   select(protein_id, position, AA, quality, structure_group, HalfShell, 6:287) %>%
   pivot_longer(cols = 7:288,
                names_to = "Compound",
                values_to = "R") %>%
   filter(R != "NaN",
          !is.na(R),
-         quality > 70
+         #quality > 80
          ) %>%
   mutate(R = as.numeric(R),
          Class = ifelse(str_detect(Compound, "CL"),
@@ -2830,7 +2818,7 @@ gygi.liganded.cys %>%
   ungroup() %>%
   group_by(HalfShell, Total, Liganded, Electrophile) %>%
   summarise(n=n(), .groups = "drop") %>% 
-  left_join(human.cys.wp.filtered) %>%
+  left_join(human.cys.wp.unfiltered) %>%
   mutate(Part = n / Total,
          Part.Norm = Part - Ref.Part) %>% 
   select(-n) %>%
@@ -2852,7 +2840,7 @@ gygi.liganded.cys %>%
   scale_fill_manual(values = pnw_palette("Sunset2", 2))
 
 
-#ggsave("plots/20220809/Gygi_FragmentScreening_NormAccessibility.png", height = 4, width = 6)
+ggsave("plots/20220809/Gygi_FragmentScreening_NormAccessibility.png", height = 4, width = 6)
 
 ### Not a whole lot of bias for different distributions by if a cysteine is liganded or not... 
 ## Could be due to multiple labellings/protein -- i.e. dose of fragment (25uM, 2h, in situ)  
@@ -3356,10 +3344,10 @@ print(paste0(length(unique(paste0(gygi.scout.cys$protein_id,
 ### scout fragment ligandability without structural info
 gygi.scout.cys %>%
   #filter(quality > 80) %>%
-  group_by(R.bin, Fragment) %>%
+  group_by(R.bin, Scout.Fragment) %>%
   mutate(Total = n()) %>%
   ungroup() %>%
-  group_by(R.bin, Total, HalfShell, Fragment) %>%
+  group_by(R.bin, Total, HalfShell, Scout.Fragment) %>%
   summarise(n = n(),
             .groups = "drop") %>% 
   #left_join(human.cys.wp.filtered) %>%
