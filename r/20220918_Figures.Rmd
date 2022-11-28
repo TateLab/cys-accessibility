@@ -1,0 +1,2381 @@
+---
+title: "Cysteine accessibility analysis"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library("bio3d")
+library("tidyverse")
+library("magrittr")
+library("data.table")
+library("fs")
+library("janitor")
+#library("rgl")
+library("viridis")
+library(seqinr)
+library("hacksaw")
+library(PNWColors)
+library(beepr)
+library("ggtext")
+library(ComplexHeatmap)
+library(ComplexUpset)
+
+```
+
+``` {R Useful functions}
+
+get.aa.dist <- function(uniprotid){
+  
+  print(uniprotid)
+  
+  n.aa <- af.pred %>%
+    filter(protein_id == uniprotid) %>%
+    nrow()
+  
+  if(n.aa != 0){
+  
+    col.order <- c("protein_id", "position", "AA", 1:n.aa)
+    
+    af.temp <- af.pred %>%
+      filter(protein_id == uniprotid) %>%
+      mutate(residue = paste0(AA, position)) %>%
+      select(protein_id, residue, x_coord_c, y_coord_c, z_coord_c) %>%
+      dist() %>%
+      as.matrix() %>%
+      as.data.frame() %>% 
+      rownames_to_column("position") %>%
+      mutate(protein_id = uniprotid) %>%
+      left_join(af.residue.match, by = c("protein_id", "position")) %>%
+      select(col.order) %>%
+      pivot_longer(cols = 4:ncol(.),
+                   names_to = "amino.acid2", 
+                   values_to = "euc.dist") %>%
+      distinct() %>%
+      rename(AA.1 = "AA",
+             position.1 = position,
+             position = "amino.acid2") %>%
+      left_join(af.residue.match, by = c("protein_id", "position")) %>%
+      rename(AA.2 = "AA", 
+             position.2 = "position")
+  
+  return(af.temp)
+    
+  }else{
+    
+    print(paste("Failed on", uniprotid))
+  }
+  
+}
+
+###################
+
+get_group_number = function(){
+    i = 0
+    function(){
+        i <<- i+1
+        i
+    }
+}
+
+group_number = get_group_number()
+
+
+
+```
+
+``` {R Read in human fasta, AlphaFold accessibility for human and s.aur}
+
+## Read in human fasta
+human.fasta <- dir_ls("/Users/mew21/Library/CloudStorage/OneDrive-ImperialCollegeLondon/DUBs/Resources", regexp = "FASTA") %>%
+  fread() %>%
+  mutate(protein_id = sub(Gene, 
+                          pattern = "..\\|(.*)\\|.*",
+                          replacement = "\\1"))
+
+### Join gene names
+gene.protein.id.match <- human.fasta %>%
+  mutate(protein_id = sub(Gene, 
+                          pattern = "..\\|(.*)\\|.*",
+                          replacement = "\\1")) %>%
+  select(protein_id, Genes)
+
+#### Human AlphaFold predictions
+af.pred <- dir_ls("/Users/mew21/Documents/GitHub/structuremap/nbs/", regexp = "AlphaFoldPredicted.*hsapiens") %>% 
+  fread() %>%
+  rename(HalfShell = "nAA_12_70_pae",
+         WholeShell = "nAA_24_180_pae")
+
+
+#Uniprot PTM annotations
+uniprot.annotations <- dir_ls("~/Downloads", regexp = "allann") %>%
+  fread()
+
+
+```
+
+### Amino acid patterns 
+
+``` {R Plot distributions of accessibility by AA, eval = F}
+
+## Background distribution of average for all AAs
+af.all.aa.ref <- af.pred %>%
+  filter(quality > 90) %>%
+  mutate(Total = nrow(.)) %>%
+  group_by(Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>%
+  mutate(Ref.Part = n / Total) %>%
+  select(HalfShell, Ref.Part)
+
+## Set =< 5 as exposed and get % exposed/buried for each AA to order plots
+af.percent.exposed <- af.pred %>%
+  filter(quality > 90) %>%
+  mutate(Exposed = ifelse(HalfShell > 5,
+                          yes = "Non-exposed",
+                          no = "Exposed")) %>%
+  group_by(AA, Exposed) %>%
+  summarise(n=n(),
+            .groups = "drop") %>%
+  pivot_wider(names_from = Exposed,
+              values_from = n) %>%
+  mutate(`% Exposed` = 100 * Exposed / (Exposed + `Non-exposed`))
+
+## Histograms of adjacent AAs (1 / accessibility)
+af.by.aa <- af.pred %>%
+  filter(quality > 90) %>%
+  group_by(AA) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(AA, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>%
+  mutate(Part = n / Total)
+
+## To rank by number of 0 residues
+af.aa.exposed <- af.by.aa %>%
+  filter(HalfShell == 0) %>%
+  rename(Part.Exposed = "Part") %>%
+  select(AA, Part.Exposed) %>%
+  distinct()
+
+af.by.aa %>%
+  left_join(af.aa.exposed) %>%
+  left_join(af.all.aa.ref, by = c("HalfShell")) %>%
+  filter(AA %in% c("F","C","S","K")) %>%
+  left_join(data.frame(AA = c("F","C","S","K"),
+                       AA.Long = c("Phenylalanine", "Cysteine", "Serine", "Lysine"))) %>%
+  mutate(Part.Norm = Part - Ref.Part,
+         #AA = factor(AA, levels = c(af.percent.exposed$AA[order(af.percent.exposed$`% Exposed`)])),
+         AA.Long = factor(AA.Long, levels = c("Phenylalanine", "Cysteine", "Serine", "Lysine"))) %>% ## Order by % exposed residues
+  ggplot(aes(x = HalfShell,
+             y = 100*Part.Norm,
+             fill = AA.Long)) + 
+  geom_col() +
+  facet_wrap(~AA.Long) + 
+  #facet_grid(structure_group~factor(AA, levels = af.aa.exposed %>%
+  #                     arrange(Part.Exposed) %>%
+  #                     pull(AA))) + 
+  theme_linedraw() + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% enrichment over proteome average") + 
+  xlab("Amino Acid Depth") +
+  xlim(-0.55,16) +
+  ylim(-10,10) + 
+  scale_fill_manual(values = pnw_palette("Sunset2", 4))
+
+#ggsave("AF/Plots/AllAminoAcids_Ordered.png", height = 8, width = 10)
+
+```
+
+``` {R Amino acid exposures as heatmap}
+
+## As heatmap
+af.by.aa %>%
+  left_join(af.all.aa.ref, by = c("HalfShell")) %>%
+  mutate(Part.Norm = Part - Ref.Part,
+         AA = factor(AA, levels = c(af.percent.exposed$AA[order(af.percent.exposed$`% Exposed`)]))) %>% ## Order by % exposed residues
+  #filter(quality > 80) %>%
+  #select(AA, HalfShell, Part.Norm, Total) %>%
+  ggplot(aes(x=HalfShell,
+             y=AA,
+             fill=100*Part.Norm)) + 
+  geom_tile() +
+  scale_fill_gradientn(breaks = c(-10, 0, 10, 20),
+                       minor_breaks = NULL,
+                       colours = c("#FF5C5C", "white", "#6666FF", "#0000DC"),
+                       limits = c(-10,20)) + 
+  theme_linedraw() + 
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom",
+        panel.background = element_rect(fill = "#F6F6F6"),
+        axis.text.y = element_text(size = 12.5)) + 
+  scale_x_continuous(expand = expansion(mult = c(0.0,0.0)),
+                     limits = c(-0.5,16.5)) + 
+  scale_y_discrete(expand = expansion()) +
+  labs(fill = "% enrichment vs.\nproteome average",
+       y = "",
+       x = "Amino Acid Depth")
+
+#ggsave("plots/20220905/AminoAcid_Heatmap.png", height = 5, width = 6)
+
+```
+
+``` {R Cysteine accessibility by function/modification}
+
+### Nucleophiles
+uniprot.nucleophile <- uniprot.annotations %>%
+  filter(str_detect(`Active site`, "Nucleophile")) %>%
+  mutate(position = as.integer(sub(`Active site`, 
+                     pattern = "ACT_SITE (\\d*)[^\\d].*",
+                     replacement = "\\1"))) %>%
+  rename(protein_id = "Entry") %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(!is.na(HalfShell)) %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  filter(AA == "C") %>%
+  mutate(Total = length(AA), 
+         Class = "Active Site Nucleophile")
+
+
+#### All active site residues (not just cysteines)
+uniprot.activesite <- uniprot.annotations %>%
+  filter(!is.na(`Active site`)) %>%
+  mutate(position = as.integer(sub(`Active site`, 
+                     pattern = "ACT_SITE (\\d*)[^\\d].*",
+                     replacement = "\\1"))) %>%
+  rename(protein_id = "Entry") %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(!is.na(HalfShell)) %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  filter(AA == "C") %>%
+  mutate(Total = length(AA), 
+         Class = "All Active Site")
+
+
+### Palmitoylated cysteines
+uniprot.palmitoyl <- uniprot.annotations %>%
+  mutate(All.Residues = str_extract_all(Lipidation, 'LIPID (\\d*)[^\\d]* /note="S-palmitoyl cysteine'),
+         All.Residues = str_extract_all(as.character(All.Residues), 'LIPID (\\d*)'),
+         All.Residues = sub(All.Residues, 
+                            pattern = 'c\\(',
+                            replacement = ""),
+         All.Residues = gsub(All.Residues, 
+                            pattern = '[\\(\\;\\"\\)]',
+                            replacement = ""),
+         All.Residues = gsub(All.Residues, 
+                            pattern = 'LIPID ',
+                            replacement = "")) %>%
+  separate(All.Residues, into = paste("Residue", 1:6), sep = ", ") %>%
+  select(c("Entry", "Gene Names", paste("Residue", 1:6))) %>%
+  filter(`Residue 1` != "character0") %>%
+  pivot_longer(cols = 3:8,
+               names_to = "Residue.X",
+               values_to = "position") %>%
+  select(-Residue.X, -`Gene Names`) %>%
+  rename(protein_id = "Entry") %>%
+  mutate(position = as.integer(position)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(!is.na(HalfShell),
+         AA == "C",
+         !is.na(position)) %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  mutate(Total = length(AA), 
+         Class = "Palmitoyl")
+
+
+### Farnesylated proteins
+uniprot.prenyl <- uniprot.annotations %>%
+  filter(str_detect(Lipidation, 
+                    pattern = "farnesyl") | 
+           str_detect(Lipidation, pattern = "geranyl")) %>%
+  mutate(All.Residues.F = str_extract_all(Lipidation, 'LIPID (\\d*)[^\\d]* /note="S-farnesyl cysteine'),
+         All.Residues.F = str_extract_all(as.character(All.Residues.F), 'LIPID (\\d*)'),
+         All.Residues.GG = str_extract_all(Lipidation, 'LIPID (\\d*)[^\\d]* /note="S-geranylgeranyl cysteine'),
+         All.Residues.GG = str_extract_all(as.character(All.Residues.GG), 'LIPID (\\d*)'),
+         All.Residues.F = sub(All.Residues.F, 
+                            pattern = 'c\\(',
+                            replacement = ""),
+         All.Residues.F = gsub(All.Residues.F, 
+                            pattern = '[\\(\\;\\"\\)]',
+                            replacement = ""),
+         All.Residues.F = gsub(All.Residues.F, 
+                            pattern = 'LIPID ',
+                            replacement = ""),
+         All.Residues.GG = sub(All.Residues.GG, 
+                            pattern = 'c\\(',
+                            replacement = ""),
+         All.Residues.GG = gsub(All.Residues.GG, 
+                            pattern = '[\\(\\;\\"\\)]',
+                            replacement = ""),
+         All.Residues.GG = gsub(All.Residues.GG, 
+                            pattern = 'LIPID ',
+                            replacement = "")) %>%
+  separate(All.Residues.GG, into = paste0("All.Residues.GG.", 1:2), sep = ", ") %>%
+  select(c("Entry", "Gene Names", 24:26)) %>%
+  pivot_longer(cols = 3:5,
+               names_to = "Residue.X",
+               values_to = "position") %>%
+  mutate(position = as.numeric(position)) %>%
+  filter(!is.na(position)) %>%
+  rename(protein_id = "Entry") %>%
+  select(protein_id, position) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id,quality,  AA, position, HalfShell, structure_group) %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA), 
+         Class = "Prenyl") 
+
+## Metal binding cysteines
+uniprot.metalcys <- uniprot.annotations %>%
+  filter(!is.na(`Metal binding`)) %>%
+  mutate(All.Residues = str_extract_all(`Metal binding`, 'METAL (\\d*)[^\\d]* /note=".*?"'),
+         #All.Metals = str_extract_all(`Metal binding`, 'note=\\".*\\"\\; \\/')) %>%
+         All.Residues = gsub(All.Residues, 
+                            pattern = '[\\(\\;\\"\\)]',
+                            replacement = "")) %>%
+  separate(All.Residues, into = paste("Residue", 1:34), sep = ", ") %>%
+  select(c("Entry", "Gene Names", paste("Residue", 1:34))) %>%
+  filter(`Residue 1` != "character0") %>%
+  pivot_longer(cols = 3:36,
+               names_to = "Residue.X",
+               values_to = "Residue") %>%
+  filter(!is.na(Residue)) %>%
+  select(-Residue.X) %>%
+  mutate(position = as.integer(sub(Residue, 
+                       pattern = ".*METAL (\\d.*) /note=.*",
+                       replacement = "\\1")),
+         Metal = sub(Residue, 
+                     pattern = ".*METAL \\d.* /note=([A-z]*)[^A-z].*",
+                     replacement = "\\1"),
+         Metal = sub(Metal, 
+                     pattern = ".*METAL \\d.* /note=([A-z]*)$",
+                     replacement = "\\1"),
+         Metal = ifelse(Metal == "Cu",
+                        yes = "Copper",
+                        no = ifelse(Metal == "Fe",
+                                    yes = "Iron",
+                                    no = ifelse(Metal == "Zn",
+                                                yes = "Zinc",
+                                                no = ifelse(Metal == "Li",
+                                                            yes = "Lithium",
+                                                            no = ifelse(Metal == "Ni",
+                                                                        yes = "Nickel",
+                                                                        no = Metal)))))) %>%
+  rename(protein_id = "Entry") %>%
+  select(protein_id, position, Metal) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(!is.na(HalfShell)) %>%
+  select(protein_id,quality,  AA, position, HalfShell, Metal, structure_group) %>%
+  filter(AA == "C") %>%
+  mutate(Total = length(AA), 
+         Class = "Metal Binding") 
+
+
+
+## Disulfides
+uniprot.disulfide <- uniprot.annotations %>%
+  filter(str_detect(`Disulfide bond`, "DISULF")) %>%
+  select(Entry, `Gene Names`, `Disulfide bond`) %>%
+  mutate(Start = sub(`Disulfide bond`, 
+                     pattern = "DISULFID (\\d*)[^\\d].*",
+                     replacement = "\\1"),
+         End = sub(`Disulfide bond`, 
+                     pattern = "DISULFID \\d*\\.\\.(\\d*).*",
+                     replacement = "\\1")) %>%
+  pivot_longer(cols = 4:5, 
+               names_to = "Type",
+               values_to = "Residue") %>%
+  select(-Type) %>%
+  rename(protein_id = "Entry") %>%
+  left_join(human.fasta) %>%
+  mutate(AA = substr(Sequence, start = Residue, stop = Residue)) %>%
+  rename(position = "Residue") %>% 
+  mutate(position = as.integer(position)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  rename(AA = "AA.x") %>%
+  filter(!is.na(HalfShell),
+         !is.na(AA)) %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  mutate(Total = length(AA), 
+         Class = "Disulfide") %>%
+  filter(AA == "C")
+
+## ALl cysteines across proteome
+human.cys.wp.unfiltered <- af.pred %>%
+  filter(AA == "C") %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  distinct() %>%
+  mutate(Total = length(AA),
+         Class = "Whole Proteome") %>%
+  group_by(Total, HalfShell) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Ref.Part = n / Total) %>%
+  select(HalfShell, Ref.Part)
+
+## Filtered at >80 quality
+human.cys.wp.filtered <- af.pred %>%
+  filter(AA == "C",
+         quality > 70) %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  distinct() %>%
+  mutate(Total = length(AA),
+         Class = "Whole Proteome") %>%
+  group_by(Total, HalfShell) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Ref.Part = n / Total) %>%
+  select(HalfShell, Ref.Part)
+
+
+## Filtered at >80 quality with structure_groups 
+human.cys.wp.structure.filtered <- af.pred %>%
+  filter(AA == "C",
+         quality > 80) %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  distinct() %>%
+  group_by(structure_group) %>%
+  mutate(Total = n()) %>% 
+  ungroup() %>%
+  group_by(Total, HalfShell, structure_group) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Ref.Part = n / Total) %>%
+  select(HalfShell, structure_group, Ref.Part)
+
+## uniprot all residues
+uniprot.allcys <- af.pred %>%
+  select(protein_id,quality,  AA, position, HalfShell, structure_group) %>%
+  filter(AA == "C") %>%
+  mutate(Total = length(AA), 
+         Class = "All Cysteines") %>%
+  group_by(Total, HalfShell)
+
+uniprot.combined <- rbind(#uniprot.allcys,
+      #uniprot.activesite,
+      uniprot.nucleophile,
+      uniprot.palmitoyl,
+      #uniprot.metalcys %>% select(-Metal),
+      uniprot.prenyl,
+      uniprot.disulfide) %>%
+  mutate(Facet = paste0(Class, "\nn = ", Total))
+
+  
+
+uniprot.combined %>%
+  mutate(Facet = factor(Facet, levels =c(unique(uniprot.combined$Facet)[c(4,1,2,3)]))) %>%
+  filter(AA=="C") %>%
+  group_by(Class) %>%
+  mutate(Total = n()) %>% 
+  ungroup() %>%
+  group_by(AA,  Facet,Class, Total, HalfShell) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Part = n / Total) %>%
+  #left_join(human.cys.ref.dist, by = "HalfShell") %>% 
+  #mutate(Part.Norm = Part - Ref.Part) %>%
+  ggplot(aes(x = HalfShell,
+             y = 100*Part,
+             fill = Class)) + 
+  geom_col(position = position_identity()) +
+  facet_wrap(~Facet, 
+             ncol = 4) + 
+  xlab("Amino Acid Depth") + 
+  theme_linedraw() + 
+  theme(panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12),
+        legend.position = "none") + 
+  ylab("% of residues") + 
+  scale_y_continuous(expand = expansion(mult = c(0.0,0.05))) +
+  scale_x_continuous(expand = expansion(mult = c(0.0,0.05)),
+                     limits = c(-0.5, 14.5)) +
+  scale_fill_manual(values = pnw_palette("Sunset2", 4))
+
+ggsave("plots/20220905/CysPTM_Distributions_RawDist.png", height = 3, width = 8)
+
+```
+
+### Cysteine profiling with different probes (public data)
+
+``` {R Public data solvent exposure distribution}
+
+### Gygi / Cravatt nature biotech 2021
+gygi.df <- dir_ls("~/Downloads", regexp = "41587_2020_778_MOESM9_ESM")[1] %>%
+  readxl::read_excel(sheet = 2) %>%
+  mutate(protein_id = sub(`Uniprot ID`, 
+                           pattern = "..\\|(.*)\\|.*",
+                           replacement = "\\1")) %>%
+  rename(position = "Site Position") %>%
+  left_join(af.pred) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%  
+  mutate(Total = length(AA),
+         Dataset = "SLC-ABPP",
+         Probe = "500uM DBIA",
+         Reference = "Ref.1",
+         Labelling = "Lysate")
+
+
+### Thiopyridyl agarose
+tp.resin.df <- dir_ls("/Users/mew21/Library/CloudStorage/OneDrive-ImperialCollegeLondon/Proteomics/LMS/20220425_TP-Resin_DDA/b008p107/MSFragger/OpenSearch/20220608_Cys_Open",
+       regexp = "peptide.tsv") %>%
+  fread() %>% 
+  mutate(Peptide.Cys = str_locate(Peptide, ## Location of Cys in peptide
+                                  "C")[,1] - 2) %>% # account for +1 of matching
+  rename(protein_id = "Protein ID") %>%
+  left_join(human.fasta, by = "protein_id") %>% ## join whole protein sequence from FASTA 
+  mutate(Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Peptide)[,1], ## [1] takes start of seq
+         position = Peptide.Start + Peptide.Cys + 1) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell)) %>%
+  mutate(Total = length(AA),
+         Dataset = "TP-Resin",
+         Probe = "",
+         Reference = "Ref.2",
+         Labelling = "Lysate")
+
+### First DBIA experiment
+dbia.df <- dir_ls("/Users/mew21/Library/CloudStorage/OneDrive-ImperialCollegeLondon/CysteineProfiling/DBIA/Data/20220630_tripletof_dbia_testinjections", regexp = "20220702_DBIA_Fixed296_noIAA_EditLib_Structural_Strip_PredictedfromFASTA_Output.tsv") %>%
+  fread() %>%
+  filter(str_detect(Run,
+                    "20220701_DBIA")) %>%
+  mutate(protein_id = sub(Protein.Group,
+                          pattern = "(.*)\\;.*",
+                          replacement = "\\1"),
+         Peptide.Cys = str_locate(Stripped.Sequence, ## Location of Cys in peptide
+                                  "C")[,1] - 2) %>% # account for +1 of matching
+  left_join(human.fasta, by = "protein_id") %>% ## join whole protein sequence from FASTA 
+  mutate(Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Stripped.Sequence)[,1], ## [1] takes start of seq
+         position = Peptide.Start + Peptide.Cys + 1) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell)) %>%
+  mutate(Total = length(AA),
+         Dataset = "DBIA",
+         Probe = "500uM DBIA",
+         Reference = "Ref.3",
+         Labelling = "Lysate")
+
+### DIA-ABPP
+dia.abpp.df <- dir_ls("~/OneDrive - Imperial College London/Cys/DIA-ABPP/Data/",
+       regexp = "AllFragments.*NoIAA.tsv") %>%
+  fread() %>%
+  filter(Global.Q.Value < 0.01, ## manually filter q-values on precursors (check run vs global)
+         str_detect(Precursor.Id, "CysTag"), ## Tagged Cys-peptides only
+         Proteotypic == 1, ## Proteotypic only - potentially not necessary (homologs)
+         Precursor.Normalised != 0, ## Remove zero values
+         !str_detect(Protein.Group, ";")) %>% ## Remove peptides with multiple protein IDs
+  distinct() %>%
+  mutate(Precursor.Tag = sub(Precursor.Id, ## Format to same as Spectronaut
+                            pattern = "\\d*$",
+                            replacement = ""),
+         Precursor.Normalised = as.numeric(Precursor.Normalised)) %>%
+  select(Precursor.Tag, Stripped.Sequence, Protein.Group, Precursor.Id, Precursor.Normalised) %>%
+  distinct() %>% ## Find Cys position (in protein) and annotate dataframe for each precursor
+  mutate(Peptide.Cys = str_locate(Precursor.Tag, ## Location of Cys in peptide
+                                  "\\(CysTag1\\)")[,1] - 2) %>% # account for +1 of matching
+  rename(protein_id = "Protein.Group") %>%
+  left_join(human.fasta, by = "protein_id") %>% ## join whole protein sequence from FASTA 
+  mutate(Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Stripped.Sequence)[,1], ## [1] takes start of seq
+         Cys = Peptide.Start + Peptide.Cys,
+         Cys.Unique = paste(Genes, Cys, sep = ", C")) %>%
+  rename(position = "Cys") %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "DIA-ABPP",
+         Probe = "100uM IA-alkyne",
+         Reference = "Ref.4",
+         Labelling = "Lysate")
+
+### Weerapana original Nature
+## we.conc.df -- used at other point in notebook
+isotop.original.df <- we.conc.df %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "isoTOP-ABPP",
+         Probe = "100uM IA-alkyne",
+         Reference = "Ref.5",
+         Labelling = "Lysate")
+
+### Weerapana/Abo optimised caged-probes
+caged.cik4.df <- dir_ls("caged_weerapana", regexp = "cbic") %>%
+  readxl::read_excel(sheet = "CIK4_AllReps") %>%
+  row_to_names(row_number = 1) %>%
+  rename(protein_id = "id",
+         position = "cysteine position") %>%
+  select(protein_id, position) %>%
+  distinct() %>%
+  mutate(position = as.integer(position)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "Caged-iodoketone",
+         Probe = "200uM CIK4", 
+         Reference = "Ref.6",
+         Labelling = "Live cell")
+
+### Weerapana/Abo CBK1 repeats
+caged.cbk1.df <- dir_ls("caged_weerapana", regexp = "cbic") %>%
+  readxl::read_excel(sheet = "CBK1_AllReps") %>%
+  row_to_names(row_number = 1) %>%
+  rename(protein_id = "id",
+         position = "cysteine position") %>%
+  select(protein_id, position) %>%
+  distinct() %>%
+  mutate(position = as.integer(position)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "Caged-bromoketone",
+         Probe = "200uM CBK1",
+         Reference = "Ref.7",
+         Labelling = "Live cell")
+
+
+### Weerapana caged probes -- in living cells (JACS)
+caged.live.df <- dir_ls("~/Downloads/", regexp = "/ja5b04350_si_001") %>%
+  readxl::read_excel(sheet = 3) %>%
+  row_to_names(row_number = 1) %>%
+  rename(protein_id = "ID", 
+         position = "Cysteine position") %>%
+  mutate(position = as.integer(position)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "Caged-bromoketone",
+         Probe = "200uM CBK1",
+         Reference = "Ref.8",
+         Labelling = "Live cell")
+
+### Zanon EBX2-alkyne in MDA-MB cells
+pz.ebx2.df <- dir_ls("zanon_raw/", regexp = "table-4") %>%
+    readxl::read_excel(sheet = "HS EBX2-alkyne") %>%
+    rename(protein_id = "UniProt code") %>%
+    left_join(human.fasta, by = "protein_id") %>%
+    filter(!is.na(protein_id)) %>%
+    mutate(Peptide.Cys = str_locate(string = `Modified peptide`,
+                                  pattern = "\\*")[,1] - 2,
+           Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = `Peptide sequence`)[,1], ## [1] takes start of seq
+           position = Peptide.Start + Peptide.Cys) %>%
+  ungroup() %>%
+  select(-Peptide.Cys, -Gene, -Peptide.Start) %>%
+  distinct() %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "Benziodoxole",
+         Probe = "100uM EBX2",
+         Reference = "Ref.9",
+         Labelling = "Lysate")
+
+
+### Weerapana caged probes -- lysates
+caged.lysate.df <- dir_ls("~/Downloads/", regexp = "/ja5b04350_si_001") %>%
+  readxl::read_excel(sheet = 1) %>%
+  row_to_names(row_number = 1) %>%
+  rename(protein_id = "ID", 
+         position = "Cysteine position") %>%
+  mutate(position = as.integer(position)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "Bromoketone",
+         Probe = "100uM BK1",
+         Reference = "Ref.10", 
+         Labelling = "Lysate")
+
+### Backus nature
+backus.isotop <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = 2) %>%
+  select(1) %>%
+  separate(1, into = c("protein_id", "position")) %>%
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = ""))) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "isoTOP-ABPP",
+         Probe = "100uM IA-alkyne",
+         Reference = "Ref.11", 
+         Labelling = "Lysate")
+
+
+### Vinogradova Cell
+vino_tmtabpp <- dir_ls("vinogradova_cell", regexp = "xlsx") %>%
+  readxl::read_excel(sheet = 4) %>%
+  filter(!is.na(...3)) %>%
+  row_to_names(row_number = 1) %>%
+  select(uniprot, residue_all) %>%
+  separate(residue_all, into = paste0("residue_", 1:54)) %>%
+  pivot_longer(cols = 2:55,
+               names_to = "residue",
+               values_to = "position") %>%
+  select(uniprot, position) %>%
+  filter(!is.na(position)) %>%
+  distinct() %>%
+  mutate(position = as.numeric(sub(position, pattern = "C(\\d*)", replacement = "\\1"))) %>%
+  rename(protein_id = "uniprot") %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "TMT-ABPP",
+         Probe = "100uM IA-DTB",
+         Reference = "Ref.12", 
+         Labelling = "Lysate")
+
+
+### Kemper phos
+kemper_tmtabpp <- dir_ls("kemper_phos/", regexp = "1398") %>%
+  readxl::read_excel(sheet = 2) %>%
+  filter(!is.na(...3)) %>%
+  row_to_names(1) %>%
+  separate(gene_res, into = c('gene', 'position'), sep = "_") %>%
+  select(accession, position) %>%
+  rename(protein_id = "accession") %>%
+  mutate(position = as.numeric(position)) %>%
+  filter(!is.na(position)) %>%
+  distinct() %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, HalfShell, quality, structure_group) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         AA == "C") %>%
+  mutate(Total = length(AA),
+         Dataset = "TMT-ABPP",
+         Probe = "100uM IA-DTB",
+         Reference = "Ref.13", 
+         Labelling = "Lysate")
+
+
+
+
+```
+
+``` {R Caged electrophilic probes comparison - with reference distribution}
+
+cys.probes.combined.dist <- rbind(backus.isotop,
+      isotop.original.df,
+      gygi.df,
+      pz.ebx2.df,
+      vino_tmtabpp,
+      #oxi.df,
+      kemper_tmtabpp,
+      dia.abpp.df,
+      #caged.live.df,
+      caged.lysate.df,
+      caged.cik4.df,
+      caged.cbk1.df) %>%
+  filter(quality > 70,
+         AA == "C") %>%
+  group_by(AA, Dataset, Reference) %>%
+  mutate(Total = n()) %>% 
+  ungroup() %>%
+  mutate(facet = paste0(Dataset, 
+                        ", ", Reference,
+                        "\n", Labelling, 
+                        ", ", Probe,
+                        "\nN = ",Total)) %>%
+  group_by(AA, facet, Total, HalfShell) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Part = n / Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  left_join(human.cys.wp.filtered) 
+
+cys.probes.combined.dist %>%
+  mutate(facet = factor(facet, levels =
+                          unique(cys.probes.combined.dist$facet)[c(5,8,7,6,9,10,1,2,4,3)])) %>%
+  ggplot() + 
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = facet),
+           position = position_identity(),
+           alpha = 0.4) +
+  facet_wrap(~facet, scales = "free_x", ncol = 5) +
+  xlab("Amino Acid Depth") + 
+  xlim(-0.55,18.5) +
+  theme_linedraw() + 
+  scale_fill_manual(values=rev(pnw_palette("Sunset2", length(unique(cys.probes.combined.dist$facet))))) +
+  theme(panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 16),
+        strip.text.y.right = element_text(angle = 0),
+        legend.position = "none") + 
+  ylab("% of amino acids") + 
+  scale_y_continuous(expand = expansion(mult = c(0.0,0.05))) +
+  scale_x_continuous(limits = c(-0.55,14.5),
+                     expand = expansion(mult = c(0.0,0.05)))
+
+ggsave("plots/20220905/Literature_CysProfilingCaged_Distributions.png", height = 8, width = 16)
+
+``` 
+
+``` {R Caged electrophilic probes comparison - HalfShell > 5 vs below}
+
+cys.probes.combined <- rbind(#tp.resin.df,
+      #uniprot.allcys %>% rename(Dataset = "Class") %>%
+      #  mutate(Probe = "", Reference = "", Labelling = ""),
+      #dbia.df,
+      backus.isotop,
+      isotop.original.df,
+      vino_tmtabpp,
+      kemper_tmtabpp,
+      gygi.df,
+      pz.ebx2.df,
+      dia.abpp.df,
+      #caged.live.df,
+      caged.lysate.df,
+      caged.cik4.df,
+      caged.cbk1.df) %>%
+  filter(AA == "C",
+         quality > 70
+         ) %>%
+  group_by(AA, Dataset, Reference) %>%
+  mutate(Total = n(),
+         Exposed = ifelse(HalfShell < 6, 
+                          yes = "Exposed",
+                          no = "Non-exposed")) %>% 
+  ungroup() %>%
+  mutate(facet = paste0(Dataset, 
+                        "<br>", Probe,
+                        "<br>", Labelling, 
+                        "<br> *N* = ",Total,
+                        "<br>", Reference))
+
+cys.probes.hline <- 100*(uniprot.allcys %>%
+  filter(HalfShell < 6, quality > 70) %>% nrow / uniprot.allcys %>% 
+    filter(quality > 70) %>%
+    nrow()) 
+
+         
+cys.probes.combined %>%
+  mutate(facet = factor(facet, levels = unique(cys.probes.combined$facet)[c(7,5,4,3,6,2,1,8,9,10)])) %>%
+  group_by(AA, Total, Exposed, HalfShell, facet) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Part = n / Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  filter(HalfShell < 6) %>%
+  ggplot(aes(x = facet,
+             y = 100*Part,
+             fill = factor(HalfShell, levels=5:0))) + 
+  geom_col(position = "stack",
+           alpha = 0.75,
+           width = 0.7) +
+  xlab("") + 
+  theme_linedraw() + 
+  theme(panel.grid = element_blank(),
+        strip.background = element_blank(),
+        axis.title.y = element_text(size = 20),
+        legend.position = "top",
+        legend.spacing.x = unit(0, 'cm'),
+        axis.text.y = element_text(size = 14),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 16),
+        axis.text.x = ggtext::element_markdown(size = 12.5),
+        strip.text.y.right = element_text(angle = 0.5)) + 
+  ylab("Exposed residues / %") + 
+  scale_y_continuous(#limits = c(0,75),
+                     expand = expansion(mult = c(0,0.05))) +
+  #scale_fill_manual(values = pnw_palette("Sunset2", 6)) +
+  geom_hline(yintercept = cys.probes.hline, linetype = "dashed", size = 1, colour = "grey") +
+  labs(fill = "AA Depth") +
+  guides(fill=guide_legend(ncol=6,
+                           label.position = "bottom",
+                           vjust = 1,
+                           title.position = "top",
+                           title.hjust = 0.5)) +
+  scale_fill_discrete(breaks=0:5,
+                      type = pnw_palette("Sunset2", 6))
+
+
+ggsave("plots/20220905/Literature_CysProfilingCaged_Barplot.png", height = 6, width = 18)
+
+``` 
+
+
+``` {R Bias for structure groups in Gygi data}
+
+### Gygi / Cravatt nature biotech 2021
+gygi.structure <- dir_ls("~/Downloads", regexp = "41587_2020_778_MOESM9_ESM")[1] %>%
+  readxl::read_excel(sheet = 2) %>%
+  mutate(protein_id = sub(`Uniprot ID`, 
+                           pattern = "..\\|(.*)\\|.*",
+                           replacement = "\\1")) %>%
+  rename(position = "Site Position") %>%
+  left_join(af.pred) %>%
+  select(protein_id, structure_group, AA, position, HalfShell, quality) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell)) %>% 
+  mutate(Probe = "Cell lysate\nDBIA\nN = 13245")
+
+##### Caged probes?
+caged.live.structure <- caged.cik4.df %>% ### Use ChembioChem dataset -- higher coverage
+  select(colnames(gygi.structure)) %>%
+  mutate(Probe = "Live Cell\nCaged-iodoketone\nN = 1307")
+  
+
+rbind(caged.live.structure,
+      gygi.structure) %>% 
+  filter(quality > 70,
+         AA == "C",
+         !is.na(HalfShell)) %>%
+  select(protein_id, structure_group, AA, position, Probe, HalfShell) %>% 
+  distinct() %>%
+  group_by(Probe, structure_group) %>%
+  mutate(Total = n()) %>% 
+  ungroup() %>%
+  group_by(structure_group, Probe, 
+           Total, HalfShell) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  left_join(human.cys.wp.structure.filtered) %>% 
+  mutate(Part = n / Total) %>%
+  ggplot() + 
+  geom_col(aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "grey",
+           alpha = 0.25) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = Probe),
+           position = position_identity(),
+           alpha = 0.5) +
+  facet_grid(Probe~structure_group) +
+  theme_linedraw() + 
+  theme(panel.grid = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(colour = "black", hjust = -0.01),
+        strip.text.y.right = element_text(angle = 0),
+        legend.position = "none") + 
+  ylab("% of residues") + 
+  scale_y_continuous(expand = expansion(mult = c(0,0.05))) + 
+  scale_x_continuous(limits = c(-0.55, 15.55)) + 
+  xlab("Amino Acid Depth") + 
+  scale_fill_manual(values = c(pnw_palette("Mushroom", 6)[5], pnw_palette("Sunset2", 5)[2]))
+
+ggsave("plots/20220905/GygiWeerapanaCaged_ByStructure.png", height = 5, width = 12)
+
+
+```
+
+
+``` {R Vinogradova - Scout fragment data}
+
+### Number of different things to plot:
+# Hyperreactivity experiments (use controls only to start) -- how many cysteines?
+  # Compare to Weerapana distributions
+# Elaborated fragment ligandability (subset of IA detectable peptides but might give a skew)
+# Scout fragments --- metric for broad ligandability?
+
+### Bin multiple features:
+# hyperreactivity 
+# active compound 
+# scout compound 
+## and plot by accessibility/structural feature
+
+
+## Broad ligandability by scout fragments
+vino.scout.cys <- dir_ls("vinogradova_cell", regexp = "S0092867420308230.*xlsx") %>%
+  readxl::read_excel(sheet = 7) %>%
+  select(2,4,24) %>%
+  filter(!is.na(`...2`),
+         !is.na(`...24`)) %>%
+  row_to_names(row_number = 1) %>%
+  clean_names() %>%
+  rename(protein_id = "uniprot",
+         position = "residues",
+         R = "max") %>%
+  mutate(position = as.integer(sub(position, 
+                        pattern = "C", 
+                        replacement = "")),
+         R.bin = ifelse(R < 4, 
+                        yes = "Not liganded",
+                        no = "Liganded")) %>%
+  left_join(af.pred, by = c("position", "protein_id")) %>%
+  filter(AA == "C", 
+         !is.na(R),
+         !str_detect(position, ","),
+         !is.na(HalfShell),
+         quality > 70)
+
+
+
+
+##### With reference distributions
+vino.scout.cys %>%
+  filter(quality > 70) %>%
+  group_by(R.bin) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(R.bin, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>% 
+  mutate(Part = n/Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  ggplot() + 
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           position = position_identity(),
+           alpha = 0.25) +
+  facet_wrap(~R.bin) +
+  xlim(-0.55,18.5) +
+  theme_linedraw() + 
+  facet_wrap(~paste0(R.bin, "\nn = ",Total)) +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], pnw_palette("Shuksan2", 5)[1]))
+
+
+## Add n = () to plot TODO
+
+ggsave("plots/20220905/Vino_ScoutFragments_WPRefDist.png", height = 4, width = 7.5)
+
+```
+
+``` {R Vino small molecule ligandability}
+
+## Active compounds = ac
+
+vino.ac.cys <- dir_ls("vinogradova_cell", regexp = "S0092867420308230.*xlsx") %>%
+  readxl::read_excel(sheet = 7) %>%
+  select(2,4,10) %>%
+  filter(!is.na(`...2`),
+         !str_detect(`...4`, "\\,")) %>% ## Remove cysteines with multiple sites
+  row_to_names(row_number = 1) %>%
+  clean_names() %>%
+  rename(protein_id = "uniprot",
+         position = "residues") %>%
+  mutate(position = as.integer(sub(position, 
+                        pattern = "C", 
+                        replacement = "")),
+         R.bin = ifelse(max < 4, 
+                        yes = "Not liganded",
+                        no = "Liganded")) %>%
+  left_join(af.pred, by = c("position", "protein_id")) %>%
+  filter(AA == "C",
+         !is.na(HalfShell)) %>%
+  na.omit() %>% 
+  mutate(Frag.Class = "Not applicable to Vinogradova et al.")
+  
+
+
+###
+vino.ac.cys %>%
+  filter(quality > 70) %>%
+  group_by(R.bin) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(R.bin, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>% 
+  mutate(Part = n / Total) %>%
+  left_join(human.cys.wp.filtered) %>%
+  ggplot() +
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           position = position_identity(),
+           alpha = 0.25) +
+  facet_wrap(~"Scout fragments") + 
+  theme_linedraw() + 
+  facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], pnw_palette("Shuksan2", 5)[1]))
+
+
+ggsave("plots/20220905/Vino_ActiveCompounds_WPRefDist.png", height = 4, width = 7.5)
+
+
+```
+
+``` {R Gygi + cravatt fragment screening}
+
+### Gygi / Cravatt nature biotech 2021
+gygi.liganded.cys <- dir_ls("~/Downloads", regexp = "41587_2020_778_MOESM9_ESM")[1] %>%
+  readxl::read_excel(sheet = 2) %>%
+  mutate(protein_id = sub(`Uniprot ID`, 
+                           pattern = "..\\|(.*)\\|.*",
+                           replacement = "\\1")) %>%
+  rename(position = "Site Position") %>%
+  left_join(af.pred) %>%
+  #select(protein_id, AA, position, HalfShell, structure_group, quality) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell)) %>%  
+  mutate(Total = length(AA),
+         Dataset = "SLC-ABPP") %>%
+  select(protein_id, position, AA, quality, structure_group, HalfShell, 6:287) %>%
+  pivot_longer(cols = 7:288,
+               names_to = "Fragment",
+               values_to = "R") %>% 
+  filter(R != "NaN",
+         !is.na(R),
+         quality > 70) %>%
+  mutate(Frag.Class = ifelse(str_detect(Fragment, "CL"),
+                             yes = "Chloroacetamide",
+                             no = "Acrylamide")) %>%
+  group_by(protein_id, position) %>%
+  filter(R == max(R)) %>%
+  mutate(Liganded = ifelse(R > 4, 
+                           yes = "Liganded",
+                           no = "Not liganded"))
+
+
+gygi.liganded.cys %>%
+  distinct() %>%
+  filter(!is.na(HalfShell)) %>%
+  group_by(Liganded) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(HalfShell, Total, Liganded) %>%
+  summarise(n=n(), .groups = "drop") %>% 
+  mutate(Part = n / Total) %>% 
+  ggplot() +
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = Liganded),
+           position = position_identity(),
+           alpha = 0.25) +
+  facet_wrap(~"Scout fragments") + 
+  theme_linedraw() + 
+  facet_wrap(~paste0(Liganded, "\n(n = ",Total,")")) +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], 
+                               pnw_palette("Shuksan2", 5)[1], 
+                               pnw_palette("Starfish", 4)[1]))
+
+#ggsave("plots/20220905/Gygi_FragmentScreening_NormAccessibility.png", height = 4, width = 6)
+
+### Not a whole lot of bias for different distributions by if a cysteine is liganded or not... 
+## Could be due to multiple labellings/protein -- i.e. dose of fragment (25uM, 2h, in situ)  
+## Or due to 
+## Check number of sites labelled / protein...
+
+
+
+```
+
+### TODO -- 3D sequence motif for highly reactive vs. non-reactive cysteines
+# Calculate Euclidean distance for cysteines (already done in rhyme section)
+# Choose appropriate distance cut off
+# Plot enrichment of specific AAs - ideally with side-chain directionality incorporated
+### Extend out from the beta carbon to where the cysteine thiol would sit - use as coordinate
+
+``` {R Backus fragment screenings}
+
+### Has both in vitro and in situ fragment screening
+
+backus.invitro <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = 1) %>%
+  select(1) %>%
+  separate(1, into = c("protein_id", "position"), sep = "_") %>%
+  filter(!str_detect(position, ",")) %>% ## Check no multiply annotated cys
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = ""))) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, structure_group, HalfShell, quality) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         structure_group != "unstructured",
+         quality > 70,
+         AA == "C") 
+
+## Not liganded
+backus.notliganded <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = 2) %>%
+  select(-2) %>%
+  pivot_longer(cols = 2:87,
+               values_to = "R") %>%
+  mutate(R = as.numeric(R)) %>%
+  group_by(Identifier) %>%
+  #filter(R == max(R),
+  #       max(R) < 4) %>%
+  select(1) %>%
+  separate(1, into = c("protein_id", "position"), sep = "_") %>%
+  filter(!str_detect(position, ",")) %>% ## Check no multiply annotated cys
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = ""))) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, structure_group, HalfShell, quality) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         structure_group != "unstructured",
+         quality > 70,
+         AA == "C") 
+
+
+backus.insitu <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = 7) %>%
+  select(1) %>%
+  separate(1, into = c("protein_id", "position"), sep = "_") %>%
+  filter(!str_detect(position, ",")) %>% ## Check no multiply annotated cys
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = ""))) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, structure_group, HalfShell, quality) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         structure_group != "unstructured",
+         quality > 70,
+         AA == "C") 
+
+backus.all <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = 2) %>%
+  select(1) %>%
+  separate(1, into = c("protein_id", "position"), sep = "_") %>%
+  filter(!str_detect(position, ",")) %>% ## Check no multiply annotated cys
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = ""))) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(protein_id, AA, position, structure_group, HalfShell, quality) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         structure_group != "unstructured",
+         quality > 70,
+         AA == "C") 
+
+backus.all.ref <- backus.all %>%
+  mutate(Total = length(AA)) %>% ## n.rows
+  group_by(HalfShell, Total) %>%
+  summarise(n=n(), .groups = "drop") %>%
+  mutate(Ref.Part = n / Total) %>%
+  select(HalfShell, Ref.Part)
+
+
+rbind(backus.invitro %>% mutate(Treatment = "Liganded in vitro"),
+      backus.insitu %>% mutate(Treatment = "Liganded in situ"),
+      backus.notliganded %>% mutate(Treatment = "All detected sites")) %>% ## Plot together by faceting
+  mutate(Treatment = factor(Treatment, levels = c("Liganded in situ",
+                                                  "Liganded in vitro",
+                                                  "All detected sites"))) %>%
+  filter(!is.na(HalfShell)) %>%
+  group_by(Treatment) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(HalfShell, Total, Treatment) %>%
+  summarise(n=n(), .groups = "drop") %>% 
+  left_join(human.cys.wp.filtered) %>%
+  mutate(Part = n / Total) %>% 
+  ggplot() +
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = Treatment),
+           position = position_identity(),
+           alpha = 0.25) +
+  geom_text(aes(x = 15, y = 16, 
+                label = paste0("n = ", Total)),
+            check_overlap = TRUE,
+            hjust = 1) +
+  #facet_wrap(~"Scout fragments") + 
+  theme_linedraw() + 
+  #facet_wrap(~paste0(Treatment, "\n(n = ",Total,")")) +
+  facet_wrap(~Treatment) + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(limits = c(-0.55, 15.55),
+                     expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], 
+                               pnw_palette("Shuksan2", 5)[1],
+                               pnw_palette("Moth", 5)[1]))
+
+
+ggsave("plots/20220905/Backus_FragmentScreening_WPRefDist.png", height = 2.5, width = 7)
+
+```
+
+``` {R Upset plot of in situ / in vitro treatment}
+
+upset.situ <- rbind(backus.insitu %>% mutate(Treatment = "In situ"),
+                     backus.invitro %>% mutate(Treatment = "In vitro")) %>%
+ select(protein_id, position, 
+         Treatment) %>%
+  mutate(R.bin = 1) %>%
+  distinct() %>%
+  pivot_wider(names_from = "Treatment",
+              values_from = "R.bin") %>%
+  mutate_at(vars(3:4), replace_na, 0) %>%
+  mutate(prot_pos = paste(protein_id, position, sep = "_")) %>%
+  select(-protein_id, -position) %>%
+  column_to_rownames(var = "prot_pos") %>%
+  as.matrix() %>%
+  make_comb_mat()
+
+ComplexHeatmap::UpSet(upset.situ, comb_order = rev(order(comb_size(upset.situ))))
+
+upset.situ
+
+
+
+
+```
+
+
+
+``` {R Backus heat denaturation}
+
+backus.heat <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = "heat_inact_IA_alkyne") %>%
+  select(1,3) %>%
+  separate(1, into = c("protein_id", "position"), sep = "_") %>%
+  rename(R = 3) %>% ## R = Active/Inactive
+  filter(!str_detect(position, ",")) %>% ## Check no multiply annotated cys
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = ""))) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         quality > 70,
+         AA == "C") %>%
+  mutate(R.bin = ifelse(R < 0.5,
+                        yes = "Denaturation-enriched",
+                        no = ifelse(R < 2, 
+                                    yes = "Non-changing",
+                                    no = "Native-enriched"))) %>%
+  group_by(R.bin) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(HalfShell, Total, R.bin) %>%
+  summarise(n=n(), .groups = "drop") %>%
+  mutate(Part = n / Total,
+         facet = paste0(R.bin, "\nn = ",Total))
+  
+
+backus.wp.ref <- af.pred %>%
+  filter(AA == "C",
+         quality > 70) %>%
+  select(protein_id, quality, AA, position, HalfShell, structure_group) %>%
+  distinct() %>%
+  mutate(Total = length(AA)) %>%
+  group_by(Total, HalfShell) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(R.bin = "All cysteines")
+
+## R < 0.5 --> preferentially reactive in denatured lysate
+## R > 2 --> preferentially reactive in native lysate
+
+backus.allcys.ref <- backus.heat %>%
+  mutate(Total = length(AA)) %>%
+  ungroup() %>%
+  group_by(HalfShell, Total) %>%
+  summarise(n=n(), .groups = "drop") %>%
+  mutate(Part = n / Total)
+
+backus.heat %>%
+  filter(R.bin != "Non-changing") %>%
+  mutate(facet = factor(facet, levels = unique(backus.heat$facet)[c(2,3)])) %>% 
+  ggplot() +
+  geom_col(inherits.aes = F,
+           data = backus.allcys.ref,
+           aes(x = HalfShell,
+               y = 100*Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.5) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           position = position_identity(),
+           alpha = 0.45) +
+  theme_linedraw() + 
+  facet_wrap(~facet, ncol = 1) +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(size=16),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12)) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(expand = expansion(mult = c(0.01,0.01)),
+                     limits = c(-0.55, 15.55)) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.05))) + 
+  scale_fill_manual(values = c(pnw_palette("Bay", 8)[8], 
+                               pnw_palette("Shuksan2", 5)[1])) +
+  labs(fill = "")
+
+
+ggsave("plots/20220905/Backus_HeatDenaturedIA_WPRefDist.png", height = 6.66, width = 4)
+
+
+```
+
+``` {R Correlation of number of fragments liganded (in various datasets) vs accessibility}
+
+gygi.all.cell.lines.raw <- rbind(
+  ## Obscenely fast compared to readxl
+  dir_ls("gygi_cys", regexp = "41587_2020_778_MOESM9_ESM")[1] %>%
+    fread() %>%
+    mutate(Cell.Line = "HEK293T"),
+  
+  dir_ls("gygi_cys", regexp = "41587_2020_778_MOESM10_ESM")[1] %>%
+    fread() %>%
+    mutate(Cell.Line = "PaTu-8988T"),
+    
+  dir_ls("gygi_cys", regexp = "41587_2020_778_MOESM8_ESM")[1] %>%
+    fread() %>%
+    mutate(Cell.Line = "HCT116")) %>%
+  mutate(protein_id = sub(`Uniprot ID`, 
+                           pattern = "..\\|(.*)\\|.*",
+                           replacement = "\\1")) %>%
+  rename(position = "Site Position") %>%
+  distinct() 
+
+
+gygi.all.cell.lines <- gygi.all.cell.lines.raw %>%
+  select(protein_id, position, Cell.Line, 6:290) %>%
+  pivot_longer(cols = 4:288,
+               names_to = "Compound",
+               values_to = "R") %>%
+  mutate(R = as.numeric(R)) %>%
+  filter(!R > 20,
+         R != "NaN",
+         !is.na(R),
+         #quality > 80
+         ) %>%
+  mutate(Class = ifelse(str_detect(Compound, "CL"),
+                        yes = "Chloroacetamide",
+                        no = "Acrylamide"),
+         Liganded = ifelse(R > 4, 
+                           yes = "Liganded",
+                           no = "Not liganded")) 
+
+
+
+#### Boxplots of R against binned n.fragments per cys
+
+# Joinable table for each residue of binned number of fragments per site
+gygi.n.frags.per.cys <- gygi.all.cell.lines %>%
+  group_by(position, protein_id, Liganded, Cell.Line) %>%
+  summarise(n=n(), .groups = "drop") %>% 
+  pivot_wider(names_from = "Liganded",
+              values_from = "n") %>% 
+  filter(Liganded > 0) %>%
+  mutate(Perc.Liganded = 100 * Liganded / `Not liganded`,
+         Ligand.Bin = ifelse(Liganded == 1,
+                             yes = "1",
+                             no = ifelse(Liganded < 5,
+                                         yes = "2-5",
+                                         no = ">5"))) %>%
+  #select(protein_id, position, Perc.Liganded)
+  group_by(protein_id, position, Ligand.Bin) %>%
+  summarise(N.Ligand.Bin = n()) %>%
+  filter(N.Ligand.Bin == max(N.Ligand.Bin)) %>% ## Take consensus of bin across cell lines
+  ungroup() %>%
+  select(-N.Ligand.Bin)
+
+gygi.R.nfrag %>%
+  ggplot(aes(x=Median.R)) + 
+  geom_density()
+
+gygi.R.nfrag <- gygi.all.cell.lines %>%
+  filter(R > 4) %>% ## Liganded only
+  group_by(protein_id, position) %>%
+  summarise(Mean.R = mean(R), .groups="drop") %>%
+  left_join(gygi.n.frags.per.cys, by = c("protein_id", "position")) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(#!is.na(Ligand.Bin),
+         !is.na(HalfShell),
+         AA == "C",
+         quality > 70, 
+         structure_group != "unstructured")
+
+gygi.R.nfrag %>%
+  group_by(protein_id, position) %>%
+  summarise(n=n()) %>% View
+
+gygi.R.nfrag %>%
+  ggplot(aes(x = HalfShell,
+             y = Mean.R,
+             group = paste0(HalfShell, "\n", )) + 
+  geom_violin() 
+```
+
+``` {R Filter for druggable disordered cysteines -- i.e. unstructured cys with specificity towards certain fragmetns in Gygi}
+
+gygi.disord.spec <- gygi.all.cell.lines %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(!is.na(HalfShell),
+         structure_group == "unstructured") %>%
+  select(c(1:7,10,11,31:34)) %>%
+  mutate(Highly.Liganded = ifelse(R > 10,
+                                  "Highly selective",
+                                  "Not")) %>%
+  filter(Highly.Liganded == "Highly selective") %>%
+  group_by(protein_id, position , Cell.Line) %>%
+  summarise(n=n())
+
+
+beep(sound=9)
+
+```
+
+``` {R Scout fragments from Gygi data -- should be deeper and a better comaprison}
+
+## Broad ligandability by scout fragments
+gygi.scout.cys <- dir_ls("gygi_cys", regexp = "/41587.*MOESM6.*xlsx") %>%
+  readxl::read_excel(sheet = 2) %>%
+  mutate(protein_id = sub(`Uniprot ID`, 
+                           pattern = "..\\|(.*)\\|.*",
+                           replacement = "\\1")) %>%
+  rename(position = "Site Position") %>% 
+  rename_with(~ gsub('Comp ratio \\((KBO\\d)\\)', '\\1', .x)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  select(c("protein_id", "position", paste0("KBO", c(2,5)), "AA", "HalfShell", "quality", "structure_group")) %>%
+  pivot_longer(cols = 3:4,
+               names_to = "Fragment",
+               values_to = "R") %>%
+  filter(!is.na(R),
+         AA == "C", 
+         !str_detect(position, ","),
+         !is.na(HalfShell),
+         quality > 70) %>%
+  group_by(protein_id, position) %>%
+  filter(R == max(R))
+
+print(paste0(length(unique(paste0(gygi.scout.cys$protein_id,
+                    gygi.scout.cys$position))), " cysteines identified in scout fragment experiments for AF comparison"))
+
+
+### Bin into reactivity towards scout electrophiles -- start with liganded vs. not liganded
+## Also facet by fragment
+
+##### With reference distributions
+gygi.scout.cys %>%
+  mutate(R.bin = ifelse(R > 4, 
+                        yes = "Liganded",
+                        no = "Not liganded")) %>%
+  na.omit() %>%
+  #filter(quality > 70,
+ #        structure_group != "unstructured") %>%
+  group_by(R.bin) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(R.bin, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>% 
+  mutate(Part = n/Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  ggplot() + 
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           position = position_identity(),
+           alpha = 0.25) +
+  #facet_wrap(~R.bin) +
+  theme_linedraw() + 
+  facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  #facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], pnw_palette("Shuksan2", 5)[1]))
+
+ggsave("plot")
+
+```
+``` {R Backus scout fragments}
+
+### Use Max R for each cys
+backus.scout <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = 2) %>%
+  select(1,3,4,9,10) %>%
+  separate(1, into = c("protein_id", "position"), sep = "_") %>%
+  filter(!str_detect(position, ",")) %>% ## Check no multiply annotated cys
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = ""))) %>%
+  pivot_longer(cols = 3:6,
+               names_to = "Scout",
+               values_to = "R") %>%
+  separate(Scout, into = c("Fragment", "Temp1", "Temp2", "Cell Line"), sep = "_") %>%
+  select(protein_id, position, Fragment, `Cell Line`, R) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(!is.na(HalfShell),
+         quality > 70,
+         AA == "C")  %>%
+  group_by(protein_id, position) %>%
+  filter(!is.na(R),
+         R > 0,
+         R == max(R)) %>%
+  ungroup()
+
+
+### 
+backus.scout %>%
+  mutate(R.bin = ifelse(R > 4, 
+                        yes = "Liganded",
+                        no = "Not liganded")) %>% 
+  filter(quality > 70,
+         structure_group != "unstructured") %>%
+  group_by(R.bin) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(R.bin, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>% 
+  mutate(Part = n/Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  ggplot() + 
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           position = position_identity(),
+           alpha = 0.25) +
+  #facet_wrap(~R.bin) +
+  theme_linedraw() + 
+  facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  #facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], pnw_palette("Shuksan2", 5)[1]))
+
+
+
+```
+
+``` {R Pull all scout cysteine datasets together and plot as one (check no issues with Gygi)}
+
+
+colnames(backus.scout)
+colnames(vino.scout.cys)
+colnames(gygi.scout.cys)
+
+all.scout <- rbind(backus.scout %>%
+                     select(protein_id, position, HalfShell, quality, R) %>%
+                     mutate(Dataset = "Backus et al, 2016\nisoTOP-ABPP"),
+                   vino.scout.cys %>%
+                     select(protein_id, position, HalfShell, quality, R) %>%
+                     mutate(Dataset = "Vinogradova et al., 2020\nisoTOP/TMT-ABPP"),
+                   gygi.scout.cys %>%
+                     select(protein_id, position, HalfShell, quality, R) %>%
+                     mutate(Dataset = "Kuljanin et al., 2021\nSLC-ABPP"),
+                   dia.scout %>%
+                     select(protein_id, position, HalfShell, quality, R) %>%
+                     mutate(Dataset = "Yang et al., 2022\nDIA-ABPP")) %>% 
+  mutate(Dataset = factor(Dataset, levels = c("Backus et al, 2016\nisoTOP-ABPP",
+                                              "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+                                              "Kuljanin et al., 2021\nSLC-ABPP",
+                                              "Yang et al., 2022\nDIA-ABPP")))
+
+all.scout %>%
+  filter(quality > 70) %>%
+  distinct() %>%
+  mutate(R.bin = ifelse(R > 4, 
+                        yes = "Liganded",
+                        no = "Not liganded")) %>%
+  group_by(R.bin, Dataset) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(R.bin, Dataset, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>% 
+  mutate(Part = n/Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  ggplot() + 
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           position = position_identity(),
+           alpha = 0.25) +
+  geom_text(aes(x = 15, y = 21, 
+                label = paste0("n = ", Total)),
+            check_overlap = TRUE,
+            hjust = 1) +
+  #facet_wrap(~R.bin) +
+  theme_linedraw() + 
+  #facet_wrap(paste0(R.bin, "\n(n = ",Total,")")~Dataset) +
+  #facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  facet_grid(R.bin ~ Dataset) + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(limits = c(-0.55,15.5),
+                     expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], 
+                               pnw_palette("Shuksan2", 5)[1]))
+
+#ggsave("plots/20220905/AllScout_RefDist.png", height = 4, width = 9)
+
+```
+
+
+``` {R Pull all fragment screening datasets together}
+
+
+
+
+backus.cl.ac <- data.frame(
+  Fragment = c(2:15,17,20:56),
+  Warhead = c(1,1,1,2,0,1,
+              1,1,1,1,1,1,
+              2,2,0,1,1,1,0,
+              0,1,2,1,1,1,
+              1,2,1,1,1,1,1,
+              2,2,1,2,0,0,
+              1,1,1,2,2,2,1,
+              1,1,1,2,1,1,2)) %>% ## 1 = Cl, 2 = Ac, 0 = other
+  mutate(Frag.Class = ifelse(Warhead == 2, 
+                             yes = "Acrylamide",
+                             no = ifelse(Warhead == 1, 
+                                         yes= "Chloroacetamide",
+                                         no = "Other")))
+
+backus.fragments <- dir_ls("backus_cys", regexp = "/41586.*xlsx") %>%
+  readxl::read_excel(sheet = 2) %>%
+  select(1,3:88) %>%
+  separate(1, into = c("protein_id", "position"), sep = "_") %>%
+  filter(!str_detect(position, ",")) %>% ## Check no multiply annotated cys
+  pivot_longer(cols = 3:88,
+               values_to = "R",
+               names_to = "Fragment") %>%
+  mutate(position = as.integer(sub(position, pattern = "C", replacement = "")),
+         R = as.numeric(R),
+         Fragment = sub(Fragment, pattern = "(\\d*)_.*", replacement = "\\1"),
+         Fragment = as.numeric(Fragment)) %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  left_join(backus.cl.ac, by = "Fragment") %>%
+  select(protein_id, R,AA, position, HalfShell, quality, Frag.Class) %>%
+  distinct() %>%
+  filter(!is.na(HalfShell),
+         quality > 70,
+         !is.na(R),
+         R > 0,
+         AA == "C") %>%
+  group_by(protein_id, position) %>%
+  filter(R == max(R)) %>%
+  ungroup()
+
+all.fragment <- rbind(backus.fragments %>%
+                        select(protein_id, position, R, Frag.Class) %>%
+                        mutate(Dataset = "Backus et al, 2016\nisoTOP-ABPP"),
+                      vino.ac.cys %>%
+                        rename(R = "max") %>%
+                        select(protein_id, position, R, Frag.Class) %>%
+                        mutate(Dataset = "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+                               R = as.numeric(R)),
+                      gygi.liganded.cys %>%
+                        select(protein_id, position, R, Frag.Class) %>%
+                        mutate(Dataset = "Kuljanin et al., 2021\nSLC-ABPP",
+                               R = as.numeric(R)),
+                      dia.fragments %>%
+                        select(protein_id, position, R, Frag.Class) %>%
+                        mutate(Dataset = "Yang et al., 2022\nDIA-ABPP",
+                               R = as.numeric(R))) %>%
+    mutate(Dataset = factor(Dataset, levels = c("Backus et al, 2016\nisoTOP-ABPP",
+                                              "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+                                              "Kuljanin et al., 2021\nSLC-ABPP",
+                                              "Yang et al., 2022\nDIA-ABPP"))) %>%
+  left_join(af.pred, by = c('protein_id', 'position')) %>%
+  filter(!is.na(HalfShell),
+         quality > 70,
+         structure_group != "unstructured")
+
+
+##### Plot all together
+all.fragment %>%
+  distinct() %>%
+  mutate(R.bin = ifelse(R > 4, 
+                        yes = "Liganded",
+                        no = "Not liganded")) %>%
+  group_by(R.bin, Dataset) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(R.bin, Dataset, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>% 
+  mutate(Part = n/Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  ggplot() + 
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           position = position_identity(),
+           alpha = 0.25) +
+  geom_text(aes(x = 15, y = 23, 
+                label = paste0("n = ", Total)),
+            check_overlap = TRUE,
+            hjust = 1) +
+  ##facet_wrap(~R.bin) +
+  theme_linedraw() + 
+  #facet_wrap(paste0(R.bin, "\n(n = ",Total,")")~Dataset) +
+  #facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  facet_grid(R.bin ~ Dataset) + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(limits = c(-0.55,15.5),
+                     expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], pnw_palette("Shuksan2", 5)[1]))
+
+
+
+```
+
+
+``` {R Directly compare chloro / acryl for 3 fragment screening datasets}
+
+compare.cl.ac <- rbind(
+  all.fragment %>%
+    filter(Dataset != "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+           Frag.Class == "Chloroacetamide",
+           quality > 70) %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Liganded by\nchloroacetamides",
+                          no = "Not liganded")) %>%
+    group_by(R.bin, Dataset) %>%
+    mutate(Total = n()) %>%
+    ungroup() %>%
+    group_by(R.bin, Dataset, Total, HalfShell) %>%
+    summarise(n = n(),
+              .groups = "drop") %>% 
+    mutate(Part = n/Total),
+  all.fragment %>%
+    filter(Dataset != "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+           Frag.Class == "Acrylamide",
+           quality > 70) %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Liganded by\nacrylamides",
+                          no = "Not liganded")) %>%
+    group_by(R.bin, Dataset) %>%
+    mutate(Total = n()) %>%
+    ungroup() %>%
+    group_by(R.bin, Dataset, Total, HalfShell) %>%
+    summarise(n = n(),
+              .groups = "drop") %>% 
+    mutate(Part = n/Total),
+  all.scout %>%
+    filter(Dataset != "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+           quality > 70,
+           Dataset != "Vinogradova et al., 2020\nTMT-ABPP") %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Liganded by\nscout fragments",
+                          no = "Ignore")) %>%
+    group_by(R.bin, Dataset) %>%
+    mutate(Total = n()) %>%
+    ungroup() %>%
+    group_by(R.bin, Dataset, Total, HalfShell) %>%
+    summarise(n = n(),
+              .groups = "drop") %>% 
+    mutate(Part = n/Total))
+  
+
+### plot altogether
+compare.cl.ac %>%
+  filter(R.bin %in% c("Liganded by\nchloroacetamides", "Liganded by\nacrylamides")) %>%
+  ggplot() +
+  #geom_col(data = human.cys.wp.filtered,
+  #         aes(x = HalfShell,
+  #             y = 100*Ref.Part),
+  #        width = 1,
+  #        position = position_identity(),
+  #         fill = "light grey",
+  #         alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           width = 1,
+           position = position_identity(),
+           alpha = 0.25) +
+  geom_text(aes(x = 15, y = 19.5, 
+                label = paste0("n = ", Total)),
+            check_overlap = TRUE,
+            hjust = 1) +
+  ##facet_wrap(~R.bin) +
+  theme_linedraw() + 
+  #facet_wrap(paste0(R.bin, "\n(n = ",Total,")")~Dataset) +
+  #facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  facet_wrap(~Dataset) + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(limits = c(-0.55,15.5),
+                     expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = pnw_palette("Sunset2", 4))
+
+
+
+
+### As boxplots
+rbind(
+  all.fragment %>%
+    filter(Dataset != "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+           Frag.Class == "Chloroacetamide",
+           quality > 70) %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Chloroacetamides",
+                          no = "Not liganded")) %>% 
+    select(R.bin, R, Dataset, Frag.Class, HalfShell),
+  all.fragment %>%
+    filter(Dataset != "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+           Frag.Class == "Acrylamide",
+           quality > 70) %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Acrylamides",
+                          no = "Not liganded")) %>% 
+  select(R.bin, R, Dataset, Frag.Class, HalfShell),
+  all.fragment %>%
+    filter(Dataset == "Vinogradova et al., 2020\nisoTOP/TMT-ABPP",
+           quality > 70) %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Elaborated electrophiles",
+                          no = "Not liganded")) %>% 
+    select(R.bin, R, Dataset, Frag.Class, HalfShell)) %>%
+  distinct() %>%
+  filter(R.bin %in% c("Chloroacetamides", "Acrylamides", "Not liganded", "Elaborated electrophiles")) %>% 
+  mutate(R.bin = factor(R.bin, levels = c("Not liganded", "Acrylamides", "Chloroacetamides", "Elaborated electrophiles"))) %>%
+  ggplot(aes(x = HalfShell,
+                   y = Dataset,
+                   fill = R.bin)) +
+  geom_boxplot()+
+  theme_linedraw() + 
+  theme(panel.grid = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("") + 
+  xlab("Amino Acid Depth") +
+  labs(fill = "Liganded by:") +
+  scale_fill_manual(values = pnw_palette("Sunset2", 4))
+
+
+#ggsave("plots/20220905/CLvsAC_Boxplots.png", height = 4.5, width = 7.5)
+
+
+
+```
+
+
+``` {R Put scout and all fragments screening datasets together and plot altogether -- without Frag.Class}
+
+combine.all.frags <- rbind(
+  all.fragment %>%
+    filter(quality > 70) %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Liganded by\nfragment library",
+                          no = "Not liganded")) %>%
+    group_by(R.bin, Dataset) %>%
+    mutate(Total = n()) %>%
+    ungroup() %>%
+    group_by(R.bin, Dataset, Total, HalfShell) %>%
+    summarise(n = n(),
+              .groups = "drop") %>% 
+    mutate(Part = n/Total),
+  all.scout %>%
+    filter(quality > 70) %>%
+    distinct() %>%
+    mutate(R.bin = ifelse(R > 4, 
+                          yes = "Liganded by\nscout fragments",
+                          no = "Ignore")) %>%
+    group_by(R.bin, Dataset) %>%
+    mutate(Total = n()) %>%
+    ungroup() %>%
+    group_by(R.bin, Dataset, Total, HalfShell) %>%
+    summarise(n = n(),
+              .groups = "drop") %>% 
+    mutate(Part = n/Total))
+  
+
+### plot altogether
+combine.all.frags %>%
+  filter(R.bin != "Ignore") %>%
+  ggplot() +
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+          width = 1,
+          position = position_identity(),
+           fill = "light grey",
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           width = 1,
+           position = position_identity(),
+           alpha = 0.25) +
+  geom_text(aes(x = 15, y = 19.5, 
+                label = paste0("n = ", Total)),
+            check_overlap = TRUE,
+            hjust = 1) +
+  ##facet_wrap(~R.bin) +
+  theme_linedraw() + 
+  #facet_wrap(paste0(R.bin, "\n(n = ",Total,")")~Dataset) +
+  #facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  facet_grid(R.bin ~ Dataset) + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(limits = c(-0.55,15.5),
+                     expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = pnw_palette("Sunset2", 4))
+
+#ggsave("plots/20220905/AllScoutFragment_RefDist.png", height = 6, width = 8)
+
+
+
+```
+
+
+``` {R DIA-ABPP fragment screening}
+
+
+dia.cl.ac <- data.frame(Fragment = c("F2","F3","F4","F5","F7","F8","F9","F10","F11",
+                                     "F12","F13","F14","F20","F21","F23","F27","F28",
+                                     "F30","F31","F32", "F33","F38","F52","F56")) %>%
+  mutate(Frag.Class = ifelse(Fragment %in% paste0("F", c(5,14,23,31,38,56)),
+                             yes = "Acrylamide",
+                             no = "Chloroacetamide"))
+
+### DIA-ABPP
+dia.fragments <- dir_ls("dia_abpp", regexp = "pp/ja") %>%
+  readxl::read_excel(sheet = 2, na = "--") %>%
+  filter(!str_detect(Proteins, ",")) %>%
+  rename(protein_id = "Proteins") %>%
+  left_join(human.fasta %>% select(Sequence, protein_id)) %>%
+  mutate(Stripped.Sequence = sub(Peptides, 
+                                 pattern = "([A-Z]*)\\*([A-Z]*)", 
+                                 replacement = "\\1\\2"),
+         Peptide.Cys = str_locate(Peptides, ## Location of Cys in peptide
+                                  "\\*")[,1] - 1, # account for +1 of matching
+         Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Stripped.Sequence)[,1], ## [1] takes start of seq
+         position = Peptide.Start + Peptide.Cys - 1) %>%
+  select(protein_id, position, 3:26) %>%
+  pivot_longer(cols = 3:26,
+               names_to = "Fragment",
+               values_to = "R") %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  left_join(dia.cl.ac, by = "Fragment") %>%
+  filter(!is.na(HalfShell),
+         quality > 70,
+         !is.na(R),
+         R > 0,
+         AA == "C") %>%
+  group_by(protein_id, position) %>%
+  filter(R == max(R)) %>%
+  ungroup()
+
+### Just for scout fragments
+dia.scout <- dir_ls("dia_abpp", regexp = "pp/ja") %>%
+  readxl::read_excel(sheet = 2, na = "--") %>%
+  filter(!str_detect(Proteins, ",")) %>%
+  rename(protein_id = "Proteins") %>%
+  left_join(human.fasta %>% select(Sequence, protein_id)) %>%
+  mutate(Stripped.Sequence = sub(Peptides, 
+                                 pattern = "([A-Z]*)\\*([A-Z]*)", 
+                                 replacement = "\\1\\2"),
+         Peptide.Cys = str_locate(Peptides, ## Location of Cys in peptide
+                                  "\\*")[,1] - 1, # account for +1 of matching
+         Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Stripped.Sequence)[,1], ## [1] takes start of seq
+         position = Peptide.Start + Peptide.Cys - 1) %>%
+  select(protein_id, position, 3:26) %>%
+  pivot_longer(cols = 3:26,
+               names_to = "Fragment",
+               values_to = "R") %>%
+  left_join(af.pred, by = c("protein_id", "position")) %>%
+  filter(!is.na(HalfShell),
+         quality > 70,
+         !is.na(R),
+         R > 0,
+         Fragment %in% c("F2", "F5"),
+         AA == "C") %>%
+  group_by(protein_id, position) %>%
+  filter(R == max(R)) %>%
+  ungroup()
+
+
+### 
+dia.fragments %>%
+  distinct() %>%
+  mutate(R.bin = ifelse(R > 5, 
+                        yes = "Liganded",
+                        no = "Not liganded")) %>%
+  group_by(R.bin) %>%
+  mutate(Total = n()) %>%
+  ungroup() %>%
+  group_by(R.bin, Total, HalfShell) %>%
+  summarise(n = n(),
+            .groups = "drop") %>% 
+  mutate(Part = n/Total,
+         #Part.Norm = Part - Ref.Part
+         ) %>% 
+  ggplot() + 
+  geom_col(data = human.cys.wp.filtered,
+           aes(x = HalfShell,
+               y = 100*Ref.Part),
+           position = position_identity(),
+           fill = "light grey",
+           width = 1,
+           alpha = 0.6) +
+  geom_col(aes(x = HalfShell,
+               y = 100*Part,
+               fill = R.bin),
+           width = 1,
+           position = position_identity(),
+           alpha = 0.25) +
+  #facet_wrap(~R.bin) +
+  theme_linedraw() + 
+  #facet_wrap(paste0(R.bin, "\n(n = ",Total,")")~Dataset) +
+  #facet_wrap(~paste0(R.bin, "\n(n = ",Total,")")) +
+  facet_grid(~R.bin) + 
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill = "white", colour = "white"),
+        strip.text = element_text(colour = "black", hjust = -0.01, size = 12, face = "bold")) + 
+  ylab("% of residues") + 
+  xlab("Amino Acid Depth") +
+  scale_x_continuous(limits = c(-0.55,15.5),
+                     expand = expansion(mult = c(0.01,0.01))) +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.025))) + 
+  scale_fill_manual(values = c(pnw_palette("Lake", 8)[4], pnw_palette("Shuksan2", 5)[1]))
+
+
+```
+
+
+``` {R Number of accessible cysteines based on HalfShell <= 5 & Not unstructured}
+
+af.pred %>%
+  filter(AA == "C",
+         quality > 90,
+         structure_group != "unstructured",
+         HalfShell < 6,
+         !is.na(HalfShell)) %>%
+  #group_by(HalfShell) %>%
+  #summarise(n=n()) %>% View
+  nrow() %>%
+  paste("accessible cysteines")
+
+```
+
+``` {R Upset plot of cysteines sampled in TMT-ABPP, SLC-ABPP, DIA-ABPP and scout-liganded subsets}
+
+upset.scout <- all.scout %>%
+  group_by(protein_id, position) %>%
+  #filter(R == max(R)) %>%
+  #ungroup() %>%
+  #mutate(R.bin = ifelse(R > 4, 
+  #                      yes = 1,
+  #                      no = 0)) %>%
+  #filter(R.bin == 1) %>%
+  select(protein_id, position, 
+         #R.bin, 
+         Dataset) %>%
+  mutate(R.bin = 1) %>%
+  distinct() %>%
+  pivot_wider(names_from = "Dataset",
+              values_from = "R.bin") %>%
+  mutate_at(vars(3:6), replace_na, 0) %>%
+  mutate(prot_pos = paste(protein_id, position, sep = "_")) %>%
+  select(-protein_id, -position) %>%
+  column_to_rownames(var = "prot_pos") %>%
+  as.matrix() %>%
+  make_comb_mat()
+
+ComplexHeatmap::UpSet(upset.scout, comb_order = rev(order(comb_size(upset.scout))))
+  
+  
+  
+```
+
+
+``` {R Any evidence of protein unfolding?}
+
+## Compare number of cysteines identified per protein
+
+## Number of exposed (pPSE < 5) in proteins with >2 cysteines liganded
+unfold <- rbind(#backus.isotop,
+      #isotop.original.df,
+      gygi.df,
+      #pz.ebx2.df,
+      #vino_tmtabpp,
+      #oxi.df,
+      #kemper_tmtabpp,
+      #dia.abpp.df,
+      #caged.live.df,
+      #caged.lysate.df,
+      #caged.cik4.df,
+      caged.cbk1.df) %>%
+  select(protein_id, position, Dataset, HalfShell) %>%
+  distinct() %>%
+  group_by(protein_id, Dataset) %>%
+  filter(n() > 1) %>%
+  ungroup() %>%
+  mutate(Exposed = ifelse(HalfShell < 6, 
+                          yes = "Exposed",
+                          no = "Buried")) %>%
+  group_by(protein_id, Dataset, Exposed) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = "Exposed",
+              values_from = "n") %>%
+  mutate_at(vars(3:4), replace_na, 0) %>%
+  mutate(Total = Exposed + Buried) %>%
+  filter(Buried < 10,
+         Total < 10)
+
+unfold %>%
+  ggplot(aes(x = Buried)) + 
+  geom_histogram(binwidth = 1) +
+  facet_grid(Dataset~Total, scales = "free_y")
+
+
+unfold %>%
+  ggplot(aes(x = Buried)) + 
+  geom_histogram(binwidth = 1) + 
+  facet_grid(Dataset~paste(Exposed, "exposed residues"), scales = "free_y")
+
+### Unfinished
+
+
+
+```
