@@ -11,4 +11,4 @@ All cysteine profiling data used in this study was downloaded from the respectiv
 All figures from the corresponding [pre-print](LINK TO BE ADDED) can be generated from source data using the 'figures.Rmd' document. 
 
 ### Acknowledgements
-pPSE calculation code is adapted from [Bludau et al](https://doi.org/10.1371/journal.pbio.3001636)
+pPSE calculation code is adapted from [Bludau et al](https://doi.org/10.1371/journal.pbio.3001636) (PLoS Biol., 2022)
