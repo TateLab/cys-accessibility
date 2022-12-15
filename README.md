@@ -1,5 +1,5 @@
 ## Proteome-wide structure-based accessibility analysis of ligandable and detectable cysteines in chemoproteomic datasets
-Code and analysis scripts for [White et al.](https://www.biorxiv.org/content/10.1101/2022.12.12.518491v1) - describing integrated structural analysis of public cysteine profiling datasets with AlphaFold-predicted amino acid accessibility. 
+Code and analysis scripts for [our pre-print](https://www.biorxiv.org/content/10.1101/2022.12.12.518491v1) describing integrated structural analysis of public cysteine profiling datasets with AlphaFold-predicted amino acid accessibility. 
 
 ### Amino acid accessibility prediction
 Individual amino acid accessibility predictions (and IDR prediction) were adapted from [Bludau et al](https://doi.org/10.1371/journal.pbio.3001636) and are re-distributed in accordance with the Apache 2.0 License. This script allows the calculation of prediction-aware part-sphere exposure (pPSE) values from AlphaFold-predicted proteomes from [model organism proteomes](https://alphafold.ebi.ac.uk/download) as well as IDR prediction and secondary structure annotation.
