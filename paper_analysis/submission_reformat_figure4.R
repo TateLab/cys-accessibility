@@ -8,7 +8,7 @@ library(janitor)
 library(readxl)
 
 ### Set absolute paths to data directories
-path.to.data.folder <-  getwd() ## Set to wherever the directory of the unzipped folder of raw/resource/processed data 
+path.to.data.folder <- here() ## Set to wherever the directory of the unzipped folder of raw/resource/processed data 
 
 output.file.date <- gsub("-", "", Sys.Date())
 
@@ -124,7 +124,7 @@ treatment.combined <- rbind(treatment.invitro.raw,
          !is.na(Liganded),
          !is.na(pPSE))
 
-write_csv(treatment.combined, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure3_treatment.csv"))
+write_csv(treatment.combined, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure4_treatment.csv"))
 
 
 ### Import each fragment dataset, parse protein_id (UniProt accession), Cys position, fragment ID and R (competition) value
@@ -138,20 +138,22 @@ write_csv(treatment.combined, paste0(path.to.data.folder, "/formatted_data/", ou
 ## Vinogradova et al., 2020
 scout.vinogradova.cell <- dir_ls(paste0(path.to.data.folder, "/data/vinogradova_cell_2020"), regexp = "/1-.*S0092867420308230.*xlsx") %>%
   readxl::read_excel(sheet = 7) %>%
-  select(2,4,24) %>%
   filter(!is.na(`...2`)) %>%
   row_to_names(row_number = 1) %>%
+  select(1,2,4,24) %>%
   rename(protein_id = "Uniprot",
          position = "Residues",
          R = "Max") %>%
   mutate(position = as.integer(sub(position, ## Also removes multiply annotated Cys, as cannot be coerced to integer
                                    pattern = "C", 
                                    replacement = "")), 
-         R = as.numeric(R)) %>%
+         R = as.numeric(R),
+         Peptide = sub(Identifier, pattern = ".*\\_(.*)", replacement = "\\1")) %>%
   filter(!is.na(R),
          !is.na(position)) %>%
   mutate(Dataset="Vinogradova et al., 2020\nisoTOP/TMT-ABPP") %>%
-  distinct()
+  distinct() %>%
+  select(-Identifier, -Peptide)
 
 ### Kuljanin et al., Nature Biotechnology 2021
 scout.kuljanin.natbiotech <- dir_ls(paste0(path.to.data.folder, "/data/kuljanin_natbiotech_2021"), regexp = "/41587.*MOESM6.*xlsx") %>%
@@ -160,20 +162,24 @@ scout.kuljanin.natbiotech <- dir_ls(paste0(path.to.data.folder, "/data/kuljanin_
                           pattern = "..\\|(.*)\\|.*",
                           replacement = "\\1"),
          KB02 = as.numeric(`Comp ratio (KBO2)`),
-         KB05 = as.numeric(`Comp ratio (KBO5)`)) %>%
+         KB05 = as.numeric(`Comp ratio (KBO5)`),
+         Peptide = sub(`Peptide Sequence`, pattern = "[RK]\\.(.*)\\..*", replacement = "\\1")) %>%
   rename(position = "Site Position") %>% 
   mutate(R = pmax(KB02, KB05)) %>%
-  select(protein_id, position, R) %>%
+  select(protein_id, position, R, Peptide) %>%
   filter(!is.na(R),
          !is.na(position)) %>%
   mutate(Dataset="Kuljanin et al., 2021\nSLC-ABPP") %>%
-  distinct()
+  distinct() %>%
+  select(-Peptide)
 
 ### Yang et al., 2021
 scout.yang.jacs <- dir_ls(paste0(path.to.data.folder, "/data/yang_jacs_2022"), regexp = "22/ja") %>%
   readxl::read_excel(sheet = 2, na = "--") %>%
   filter(!str_detect(Proteins, ",")) %>% ## Multiple protein annotations removed
   rename(protein_id = "Proteins") %>%
+  mutate(N.Cys = str_count(Peptides, "C"),
+         N.Mod.Cys = str_count(Peptides, "\\*")) %>%
   left_join(res.fasta %>% select(Sequence, protein_id)) %>%
   mutate(Stripped.Sequence = sub(Peptides, 
                                  pattern = "([A-Z]*)\\*([A-Z]*)", 
@@ -222,7 +228,7 @@ scout.combined <- rbind(scout.backus.nature,
   select(protein_id,position, R, Dataset, quality, structure_group, AA, pPSE) 
   
 
-write_csv(scout.combined, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure3_scout.csv"))
+write_csv(scout.combined, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure4_scout.csv"))
 
 ######################################################################
 ######################## Fragment screenings #########################
@@ -282,6 +288,7 @@ fragment.vinogradova.cell <- dir_ls(paste0(path.to.data.folder, "/data/vinogrado
   ungroup() 
 
 
+
 ## Kuljanin et al., 2021
 fragment.kuljanin.natbiotech <- rbind(
   ## Converted to CSVs to remove slow loading by readxl
@@ -295,7 +302,8 @@ fragment.kuljanin.natbiotech <- rbind(
   
   dir_ls(paste0(path.to.data.folder, "/data/kuljanin_natbiotech_2021"), regexp = "41587_2020_778_MOESM8_ESM")[1] %>%
     fread() %>%
-    mutate(Cell.Line = "HCT116")) %>%
+    mutate(Cell.Line = "HCT116")
+  ) %>%
   mutate(protein_id = sub(`Uniprot ID`, 
                           pattern = "..\\|(.*)\\|.*",
                           replacement = "\\1")) %>%
@@ -370,6 +378,7 @@ fragment.backus.nature <- dir_ls(paste0(path.to.data.folder, "/data/backus_natur
          Fragment = as.numeric(Fragment)) %>%
   distinct() %>%
   filter(!is.na(R),
+         R != 0, ## Lots of missing values with R = 0 -- remove all from further analysis
          !is.na(position)) %>%
   left_join(fragment.warhead.backus, by = "Fragment") %>%
   mutate(Dataset="Backus et al., 2016\nisoTOP-ABPP") %>%
@@ -384,29 +393,32 @@ fragment.combined <- rbind(fragment.backus.nature,
                            fragment.kuljanin.natbiotech, 
                            fragment.vinogradova.cell, 
                            fragment.yang.jacs) %>%
+  filter(R <= 20,
+         R > 0) %>%
   left_join(res.af, by = c("protein_id", "position")) %>%
   filter(!is.na(pPSE),
          !is.na(position),
          AA == "C",
          quality > 70,
-         structure_group != "unstructured") %>%
-  group_by(protein_id, position, Fragment, Frag.Class, Dataset) %>%
-  filter(R == max(R)) %>%
-  ungroup() %>%
-  select(protein_id, position, Fragment, Frag.Class, R, Dataset, AA, quality, structure_group, pPSE)
+         structure_group != "unstructured"
+         ) %>%
+  select(protein_id, position, Fragment, Frag.Class, R, Dataset, AA, quality, structure_group, pPSE) %>%
+  distinct()
 
-write_csv(fragment.combined, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure3_fragment-all-f-c-interactions.csv"))
+write_csv(fragment.combined, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure4_fragment-all-f-c-interactions_alphafold-present.csv"))
+
+### Fragment datasets unfiltered
+fragment.unfiltered <- rbind(fragment.backus.nature, 
+                             fragment.kuljanin.natbiotech, 
+                             fragment.vinogradova.cell, 
+                             fragment.yang.jacs) %>%
+  filter(R <= 20,
+         R > 0,
+         !is.na(R)) %>%
+  left_join(res.af, by = c("protein_id", "position")) %>%
+  select(protein_id, position, Fragment, Frag.Class, R, Dataset, AA, quality, structure_group, pPSE) %>%
+  distinct()
 
 
-######################################################################
-######## Max ligandability per Cys from fragment screenings ##########
-######################################################################
-
-fragment.singlesite <- fragment.combined %>%
-  group_by(protein_id, position, Dataset) %>%
-  filter(R == max(R)) %>%
-  ungroup()
-
-write_csv(fragment.singlesite, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure3_fragment_max-R-per-cys.csv"))
-
+write_csv(fragment.unfiltered, paste0(path.to.data.folder, "/formatted_data/", output.file.date, "_figure4_fragment-all-f-c-interactions_unfiltered.csv"))
 
