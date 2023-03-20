@@ -23,10 +23,9 @@ res.fasta <- dir_ls(here("resources"), regexp = "FASTA") %>%
                           replacement = "\\1"))
 
 #### Human AlphaFold predictions
-res.af <- dir_ls(here("resources"), regexp = "AlphaFoldPredicted.*hsapiens") %>% 
-  fread() %>%
-  rename(pPSE = "nAA_12_70_pae")
-
+res.af <- here("formatted_data") %>%
+  dir_ls(regexp = "20230315_Supplementary_AlphaFold_pPSE.csv$") %>% 
+  fread() 
 
 
 ####################################################################################

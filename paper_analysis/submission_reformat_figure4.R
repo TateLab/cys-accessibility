@@ -13,17 +13,16 @@ path.to.data.folder <- here() ## Set to wherever the directory of the unzipped f
 output.file.date <- gsub("-", "", Sys.Date())
 
 ## Read in human fasta
-res.fasta <- dir_ls(paste0(path.to.data.folder, "/resources"), regexp = "FASTA") %>%
+res.fasta <- dir_ls(here("resources"), regexp = "FASTA") %>%
   fread() %>%
   mutate(protein_id = sub(Gene, 
                           pattern = "..\\|(.*)\\|.*",
-                          replacement = "\\1")) %>%
-  select(protein_id, Sequence)
+                          replacement = "\\1"))
 
 #### Human AlphaFold predictions
-res.af <- dir_ls(paste0(path.to.data.folder, "/resources"), regexp = "AlphaFoldPredicted.*hsapiens") %>% 
-  fread() %>%
-  rename(pPSE = "nAA_12_70_pae")
+res.af <- here("formatted_data") %>%
+  dir_ls(regexp = "20230315_Supplementary_AlphaFold_pPSE.csv$") %>% 
+  fread() 
 
 
 ######################################################################

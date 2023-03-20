@@ -52,7 +52,7 @@ res.fasta <- here("resources") %>%
                           replacement = "\\1"))
 
 #### Residue-level AlphaFold predicted accessibility, prediction quality, protein ID, residue numbers
-res.af.pPSE <- here("resources") %>%
+res.af.pPSE <- here("formatted_data") %>%
   dir_ls(regexp = "20230315_Supplementary_AlphaFold_pPSE.csv$") %>% 
   fread() 
 
@@ -193,7 +193,7 @@ uniprot.highqualcys <- res.af.pPSE %>%
 
 ## Read in UniProt annotations formatted
 res.uniprot.formatted <- here("formatted_data") %>%
-  dir_ls(regexp = paste0("20230313_figure2_uniprot")) %>%
+  dir_ls(regexp = paste0("20230317_figure2_uniprot")) %>%
   fread() %>%
   #rbind(uniprot.allcys) %>% ## Add reference of all predicted cys
   rbind(uniprot.highqualcys) %>%
@@ -267,7 +267,7 @@ res.uniprot.formatted %>%
 ``` {R Figure 2d} 
 
 ## Resource table of 5 closest residues in 3D to 167K predicted Cys structures from AlphaFold2 models
-res.proximal.aa <- here("resources") %>%
+res.proximal.aa <- here("formatted_data") %>%
   dir_ls(regexp = "20230315_Proximity_HighQualCys_Sequences_Wide") %>%
   fread() %>%
   rename(position = "cys_position") %>%
@@ -1365,7 +1365,7 @@ subset.overlap <- data.frame(ID = subset.all) %>%
 
 ``` {R Figure S1a}
 
-hyper.datasets <- here("resources") %>%
+hyper.datasets <- here("formatted_data") %>%
   dir_ls(regexp = "hyper") %>%
   fread()
 
@@ -1783,7 +1783,7 @@ fragment.ligandability %>%
 
 ``` {R Figure S3g}
 
-fragment.aa.pairwise <- here("resources") %>%
+fragment.aa.pairwise <- here("formatted_data") %>%
   dir_ls(regexp = "20230315_fragment_aa_pairwise_enrichment") %>%
   fread()
 
