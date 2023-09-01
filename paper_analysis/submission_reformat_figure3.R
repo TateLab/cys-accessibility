@@ -23,9 +23,10 @@ res.fasta <- dir_ls(here("resources"), regexp = "FASTA") %>%
                           replacement = "\\1"))
 
 #### Human AlphaFold predictions
-res.af <- here("formatted_data") %>%
-  dir_ls(regexp = "20230315_Supplementary_AlphaFold_pPSE.csv$") %>% 
-  fread() 
+res.af <- dir_ls(here("resources"), regexp = "AlphaFoldPredicted.*hsapiens") %>% 
+  fread() %>%
+  rename(pPSE = "nAA_12_70_pae")
+
 
 
 ### Import each coverage dataset, parse protein_id (UniProt accession) and Cys position
@@ -186,7 +187,7 @@ reformat.cao.analchem <- dir_ls(here("data", "cao_ac_2021"), regexp = "xls") %>%
   distinct() 
 
 ### Zanon et al., ChemRxiv, 2021
-### Benziodoxole (EBX1) - 100uM - Lysate
+### Ethynylbenziodoxolone (EBX2) - 100uM - Lysate
 reformat.zanon.chemrxiv <- dir_ls(here("data", "zanon_chemrxiv_2021/"), regexp = "table-4") %>%
   readxl::read_excel(sheet = "HS EBX2-alkyne") %>%
   rename(protein_id = "UniProt code") %>%
@@ -198,7 +199,7 @@ reformat.zanon.chemrxiv <- dir_ls(here("data", "zanon_chemrxiv_2021/"), regexp =
                                     pattern = `Peptide sequence`)[,1], ## [1] takes start of seq
          position = Peptide.Start + Peptide.Cys,
          N.Matches.In.Protein = str_count(Sequence, pattern = `Peptide sequence`)) %>%
-  mutate(Dataset = "Benziodoxole",
+  mutate(Dataset = "Ethynylbenziodoxolone",
          Probe = "EBX2",
          Year = "2021", 
          Concentration = "100uM",
@@ -378,6 +379,99 @@ reformat.motiwala.jacs <- dir_ls(here("data", "motiwala_jacs_2020"), regexp = "j
   distinct()
 
 
+### Abegg et al., 2021, JACS
+reformat.abegg.jacs <- dir_ls(here("data", "abegg_jacs_2021"), regexp = "21/ja1c") %>%
+  readxl::read_excel(sheet = "Table S8",
+                     col_names = T) %>%
+  row_to_names(row_number=1) %>%
+  clean_names() %>%
+  mutate(Peptide.Cys = sub(modifications, pattern = ".*Desthiobiotin \\[(.*)\\].*", replacement = "\\1"),
+         Peptide.Cys = gsub(Peptide.Cys, pattern = "C", replacement = ""),
+         Peptide.Cys = gsub(Peptide.Cys, pattern = " ", replacement = "")) %>%
+  separate(Peptide.Cys, into = paste0("Peptide.Cys_", 1:2), sep=";") %>%
+  pivot_longer(cols=c("Peptide.Cys_1", "Peptide.Cys_2"), 
+               names_to = "temp",
+               values_to = "Peptide.Cys") %>%
+  filter(!is.na(Peptide.Cys),
+         Peptide.Cys != "") %>%
+  select(1,2,7) %>%
+  rename(protein_id = 1,
+         peptide_seq = 2) %>%
+  left_join(res.fasta) %>%
+  mutate(peptide_seq_reformat = sub(peptide_seq, pattern = "\\[[RK]\\]\\.([A-Z]*)\\..*", replacement = "\\1"),
+         Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = peptide_seq_reformat)[,1], ## [1] takes start of seq
+         Peptide.Start = as.numeric(Peptide.Start),
+         Peptide.Cys = as.numeric(Peptide.Cys),
+         position = Peptide.Start + Peptide.Cys - 1) %>%
+  select(protein_id, position) %>%
+  mutate(position = as.numeric(sub(position, pattern="C",replacement="")),
+         Dataset = "Tetrafluoroalkylbenziodoxole",
+         Probe = "TFBX",
+         Reference = "Abegg et al.",
+         Concentration = "100uM",
+         Year = "2021",
+         Labelling = "Lysate") %>%
+  select(protein_id, position, Dataset, Probe, Reference, Concentration, Labelling, Year) %>%
+  distinct()
+
+
+### Liu et al., 2023, ACS Chem. Bio.
+reformat.motiwala.jacs <- dir_ls(here("data", "motiwala_jacs_2020"), regexp = "ja9b08831_si_003") %>%
+  readxl::read_excel(sheet = "BT-D2_200uM") %>%
+  filter(str_detect(Modifications, "BT-D2"),
+         !str_detect(`Master Protein Accessions`, ";")) %>%
+  mutate(N.Cys = sub(Modifications, 
+                     pattern = ".*(\\d)xBT-D2.*",
+                     replacement = "\\1"),
+         Peptide.Cys = sub(Modifications, 
+                           pattern = ".*xBT-D2 \\[(.*?)\\].*",
+                           replacement = "\\1"),
+         Peptide.Cys = sub(Peptide.Cys,pattern = "C", replacement = "")) %>%
+  filter(N.Cys == 1,
+         !str_detect(Peptide.Cys, "K"),
+         str_detect(Peptide.Cys, "\\d")) %>%
+  rename(protein_id = "Master Protein Accessions",
+         Peptide.Sequence="Sequence") %>%
+  left_join(res.fasta, by="protein_id") %>%
+  mutate(Peptide.Start = str_locate(string = Sequence, ## find peptide location in protein
+                                    pattern = Peptide.Sequence)[,1], ## [1] takes start of seq
+         Peptide.Start = as.numeric(Peptide.Start),
+         Peptide.Cys = as.numeric(Peptide.Cys),
+         position = Peptide.Start + Peptide.Cys - 1) %>%
+  mutate(position = as.numeric(sub(position, pattern="C",replacement="")),
+         Dataset = "Methylsulfonylbenzothiazole",
+         Probe = "BT-D2",
+         Reference = "Motiwala et al.",
+         Concentration = "200uM",
+         Year = "2020",
+         Labelling = "Live cell") %>%
+  select(protein_id, position, Dataset, Probe, Reference, Concentration, Labelling, Year) %>%
+  distinct()
+
+
+reformat.liu.acscb <- here("data", "liu_acscb_2023") %>%
+  dir_ls() %>%
+  readxl::read_excel(sheet = "Table S4-2") %>%
+  filter(!is.na(`...2`)) %>%
+  row_to_names(row_number=1) %>%
+  clean_names() %>%
+  mutate(protein_id = sub(protein_i_ds, 
+                          pattern = "^..\\|(.*?)\\|.*",
+                          replacement = "\\1")) %>%
+  filter(!str_detect(protein_id, ";"),
+         !str_detect(positions_within_proteins, ";")) %>%
+  rename(position = "positions_within_proteins") %>%
+  mutate(position = as.numeric(position),
+         Dataset = "Nitrile oxide",
+         Probe = "W1",
+         Reference = "Liu et al.",
+         Concentration = "500uM",
+         Year = "2023",
+         Labelling = "Live cell") %>%
+  select(protein_id, position, Dataset, Probe, Reference, Concentration, Labelling, Year) %>%
+  distinct()
+
 reformat.combined <- rbind(
   reformat.abo.cbc.bk1, 
   reformat.abo.cbc.cbk1, 
@@ -388,10 +482,11 @@ reformat.combined <- rbind(
   reformat.kuljanin.natbiotech,
   reformat.lai.chemrxiv,
   reformat.vinogradova.cell,
-  reformat.weerapana.nature,
   reformat.yan.cbc,
   reformat.yang.jacs,
   reformat.weerapana.nature,
+  reformat.liu.acscb,
+  reformat.abegg.jacs,
   reformat.motiwala.jacs,
   reformat.darabedian.nchembio,
   reformat.yang.crcb,
@@ -417,11 +512,12 @@ reformat.unfiltered <- rbind(reformat.abo.cbc.bk1,
                              reformat.backus.nature, 
                              reformat.cao.analchem,
                              reformat.kemper.natmethods,
+                             reformat.abegg.jacs,
                              reformat.kuljanin.natbiotech,
                              reformat.lai.chemrxiv,
                              reformat.vinogradova.cell,
-                             reformat.weerapana.nature,
                              reformat.yan.cbc,
+                             reformat.liu.acscb,
                              reformat.yang.jacs,
                              reformat.weerapana.nature,
                              reformat.motiwala.jacs,
